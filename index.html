@@ -41,15 +41,17 @@
 
 <script>
     let cameras = [];
+    let playerContainers = {}; // Tracks player instances by their container ID
 
     function addCamera(name) {
+        let containerId = 'player-' + name; // Unique ID for the player container
         let wrapper = document.getElementById('wrapper');
         let div = document.createElement('div');
         div.className = 'camera-preview';
-        div.id = name;
+        div.id = containerId;
         wrapper.appendChild(div);
 
-        const player = OvenPlayer.create(name, {
+        const player = OvenPlayer.create(containerId, {
             autoStart: true,
             autoFallback: false,
             mute: true,
@@ -61,17 +63,27 @@
             }],
         });
 
-        player.on("error", function (error) {
-            console.log(error);
-        });
-        player.on("stateChanged", function (data) {
-            console.log(`State changed: ${data.newstate}`);
-        });
+        playerContainers[containerId] = true; // Mark this container as having an active player
     }
+
+    function cleanupPlayers() {
+        Object.keys(playerContainers).forEach(containerId => {
+            const container = document.getElementById(containerId);
+            if (container) {
+                // If direct player destruction isn't available, consider stopping playback here if applicable
+                // Example: player.stop(); // Assuming .stop() is a valid method
+
+                // Remove the player container from the DOM
+                 container.parentNode.removeChild(container);
+                 console.log('Player container removed:', containerId);
+             }
+         });
+         playerContainers = {}; // Reset the playerContainers tracking object after cleanup
+     }
 
     function filterCameras() {
         const searchTerm = document.getElementById('searchTerm').value.toLowerCase();
-        document.getElementById('wrapper').innerHTML = ''; // Clear current cameras
+        cleanupPlayers(); // Cleanup existing players before filtering
 
         cameras.filter(camera => camera.toLowerCase().includes(searchTerm))
                .forEach(camera => addCamera(camera));
@@ -88,8 +100,7 @@
         console.log('Request active RTMP streams');
         var xhr = new XMLHttpRequest();
         xhr.open('GET', 'stat', true);
-        xhr.responseType = 'xml';
-        xhr.overrideMimeType('text/xml');
+        xhr.responseType = 'document'; // Corrected responseType
         xhr.onload = function () {
             if (xhr.status === 200) {
                 const xml = xhr.responseXML;
@@ -101,21 +112,16 @@
                     if (!el) break;
 
                     const name = el.textContent;
-                    console.log(`Camera: ${name}`);
                     cameras.push(name);
                 }
 
-                // Sort cameras alphabetically
                 cameras.sort();
-
-                // Then add cameras in sorted order
                 cameras.forEach(camera => addCamera(camera));
             }
         };
         xhr.send();
     }
 
-    // Call fetchCameras when the page loads to populate the list of cameras
     window.onload = fetchCameras;
 </script>
 </body>
