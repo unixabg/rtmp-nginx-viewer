@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Cameras</title>
+    <script src="//cdn.jsdelivr.net/npm/hls.js@latest/dist/hls.min.js"></script>
+    <script src="//cdn.jsdelivr.net/npm/ovenplayer/dist/ovenplayer.js"></script>
+    <style>
+        body {
+            background: black;
+            color: white;
+        }
+        .player-wrapper {
+            display: grid;
+            grid-template-columns: auto auto;
+            column-gap: 10px;
+            row-gap: 10px;
+        }
+        .op-wrapper.ovenplayer {
+            display: inline-block;
+            width: 100%;
+            height: 100%;
+        }
+        .op-wrapper.ovenplayer .op-ratio {
+            padding-bottom: 75%;
+        }
+        #search-wrapper {
+            padding: 20px;
+        }
+        input[type="text"], button {
+            font-size: 16px;
+        }
+    </style>
+</head>
+<body>
+<div id="search-wrapper">
+    <input type="text" id="searchTerm" placeholder="Enter camera name..." onkeyup="searchOnEnter(event)">
+    <button onclick="filterCameras()">Search</button>
+</div>
+<div class="player-wrapper" id="wrapper"></div>
+
+<script>
+    let cameras = [];
+
+    function addCamera(name) {
+        let wrapper = document.getElementById('wrapper');
+        let div = document.createElement('div');
+        div.className = 'camera-preview';
+        div.id = name;
+        wrapper.appendChild(div);
+
+        const player = OvenPlayer.create(name, {
+            autoStart: true,
+            autoFallback: false,
+            mute: true,
+            controls: true,
+            sources: [{
+                "file": `hls/${name}.m3u8`,
+                "label": "hls",
+                "type": "hls"
+            }],
+        });
+
+        player.on("error", function (error) {
+            console.log(error);
+        });
+        player.on("stateChanged", function (data) {
+            console.log(`State changed: ${data.newstate}`);
+        });
+    }
+
+    function filterCameras() {
+        const searchTerm = document.getElementById('searchTerm').value.toLowerCase();
+        document.getElementById('wrapper').innerHTML = ''; // Clear current cameras
+
+        cameras.filter(camera => camera.toLowerCase().includes(searchTerm))
+               .forEach(camera => addCamera(camera));
+    }
+
+    function searchOnEnter(event) {
+        // Check if the key pressed is 'Enter'
+        if (event.keyCode === 13) {
+            filterCameras();
+        }
+    }
+
+    function fetchCameras() {
+        console.log('Request active RTMP streams');
+        var xhr = new XMLHttpRequest();
+        xhr.open('GET', 'stat', true);
+        xhr.responseType = 'xml';
+        xhr.overrideMimeType('text/xml');
+        xhr.onload = function () {
+            if (xhr.status === 200) {
+                const xml = xhr.responseXML;
+                let camIter = xml.evaluate(`/rtmp/server/application/name[contains(., "cam")]/../live/stream/name`,
+                    xml, null, XPathResult.ANY_TYPE, null);
+
+                while (true) {
+                    const el = camIter.iterateNext();
+                    if (!el) break;
+
+                    const name = el.textContent;
+                    console.log(`Camera: ${name}`);
+                    cameras.push(name);
+                }
+
+                // Sort cameras alphabetically
+                cameras.sort();
+
+                // Then add cameras in sorted order
+                cameras.forEach(camera => addCamera(camera));
+            }
+        };
+        xhr.send();
+    }
+
+    // Call fetchCameras when the page loads to populate the list of cameras
+    window.onload = fetchCameras;
+</script>
+</body>
+</html>
+
