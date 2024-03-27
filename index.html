@@ -12,23 +12,27 @@
         }
         .player-wrapper {
             display: grid;
-            grid-template-columns: auto auto;
-            column-gap: 10px;
-            row-gap: 10px;
+            grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+            gap: 10px;
         }
-        .op-wrapper.ovenplayer {
-            display: inline-block;
+        .camera-container {
+            position: relative;
+        }
+        .camera-preview {
             width: 100%;
-            height: 100%;
+            height: 180px; /* Adjust based on your aspect ratio */
         }
-        .op-wrapper.ovenplayer .op-ratio {
-            padding-bottom: 75%;
-        }
-        #search-wrapper {
-            padding: 20px;
-        }
-        input[type="text"], button {
-            font-size: 16px;
+        .camera-overlay {
+            position: absolute;
+            bottom: 0;
+            left: 0;
+            width: 100%;
+            background-color: rgba(0, 0, 0, 0.5);
+            color: white;
+            text-align: center;
+            padding: 5px;
+            box-sizing: border-box;
+            z-index: 1; /* Make sure it's above the player */
         }
     </style>
 </head>
@@ -44,14 +48,23 @@
     let playerContainers = {}; // Tracks player instances by their container ID
 
     function addCamera(name) {
-        let containerId = 'player-' + name; // Unique ID for the player container
         let wrapper = document.getElementById('wrapper');
-        let div = document.createElement('div');
-        div.className = 'camera-preview';
-        div.id = containerId;
-        wrapper.appendChild(div);
+        let container = document.createElement('div');
+        container.className = 'camera-container';
 
-        const player = OvenPlayer.create(containerId, {
+        let playerDiv = document.createElement('div');
+        playerDiv.className = 'camera-preview';
+        playerDiv.id = 'player-' + name; // Unique ID for the player container
+
+        let overlay = document.createElement('div');
+        overlay.className = 'camera-overlay';
+        overlay.innerText = name; // Set the camera name as the text
+
+        container.appendChild(playerDiv);
+        container.appendChild(overlay);
+        wrapper.appendChild(container);
+
+        const player = OvenPlayer.create(playerDiv.id, {
             autoStart: true,
             autoFallback: false,
             mute: true,
@@ -63,34 +76,28 @@
             }],
         });
 
-        playerContainers[containerId] = true; // Mark this container as having an active player
+        playerContainers[playerDiv.id] = player; // Track the player instance
     }
 
     function cleanupPlayers() {
         Object.keys(playerContainers).forEach(containerId => {
-            const container = document.getElementById(containerId);
-            if (container) {
-                // If direct player destruction isn't available, consider stopping playback here if applicable
-                // Example: player.stop(); // Assuming .stop() is a valid method
-
-                // Remove the player container from the DOM
-                 container.parentNode.removeChild(container);
-                 console.log('Player container removed:', containerId);
-             }
-         });
-         playerContainers = {}; // Reset the playerContainers tracking object after cleanup
-     }
+            // Directly removing the player container from DOM
+            let containerElement = document.getElementById(containerId);
+            if (containerElement && containerElement.parentNode) {
+                containerElement.parentNode.removeChild(containerElement);
+            }
+        });
+        playerContainers = {}; // Reset the playerContainers tracking object after cleanup
+    }
 
     function filterCameras() {
         const searchTerm = document.getElementById('searchTerm').value.toLowerCase();
         cleanupPlayers(); // Cleanup existing players before filtering
-
         cameras.filter(camera => camera.toLowerCase().includes(searchTerm))
                .forEach(camera => addCamera(camera));
     }
 
     function searchOnEnter(event) {
-        // Check if the key pressed is 'Enter'
         if (event.keyCode === 13) {
             filterCameras();
         }
@@ -100,7 +107,7 @@
         console.log('Request active RTMP streams');
         var xhr = new XMLHttpRequest();
         xhr.open('GET', 'stat', true);
-        xhr.responseType = 'document'; // Corrected responseType
+        xhr.responseType = 'document';
         xhr.onload = function () {
             if (xhr.status === 200) {
                 const xml = xhr.responseXML;
@@ -110,7 +117,6 @@
                 while (true) {
                     const el = camIter.iterateNext();
                     if (!el) break;
-
                     const name = el.textContent;
                     cameras.push(name);
                 }
