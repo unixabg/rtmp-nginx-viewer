@@ -5,36 +5,7 @@
     <title>Cameras</title>
     <script src="//cdn.jsdelivr.net/npm/hls.js@latest/dist/hls.min.js"></script>
     <script src="//cdn.jsdelivr.net/npm/ovenplayer/dist/ovenplayer.js"></script>
-    <style>
-        body {
-            background: black;
-            color: white;
-        }
-        .player-wrapper {
-            display: grid;
-            grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
-            gap: 10px;
-        }
-        .camera-container {
-            position: relative;
-        }
-        .camera-preview {
-            width: 100%;
-            height: 180px; /* Adjust based on your aspect ratio */
-        }
-        .camera-overlay {
-            position: absolute;
-            bottom: 0;
-            left: 0;
-            width: 100%;
-            background-color: rgba(0, 0, 0, 0.5);
-            color: white;
-            text-align: center;
-            padding: 5px;
-            box-sizing: border-box;
-            z-index: 1; /* Make sure it's above the player */
-        }
-    </style>
+    <link rel="stylesheet" href="style.css">
 </head>
 <body>
 <div id="search-wrapper">
