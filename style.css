@@ -1,7 +1,25 @@
 body {
-    background: black;
-    color: white;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    height: 100vh; /* This makes sure the body takes up the full viewport height */
+    flex-direction: column; /* Stacks child elements vertically */
 }
+
+#search-wrapper {
+    margin-top: 20px; /* Adds some space between the welcome message and the search box */
+}
+
+#welcomeMessage {
+    font-size: 24px; /* Increase the text size */
+    text-align: center; /* Center the text horizontally */
+    /* Optional styles to enhance appearance */
+    padding: 20px;
+    border: 2px solid #ccc;
+    border-radius: 10px;
+    box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+}
+
 .player-wrapper {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));

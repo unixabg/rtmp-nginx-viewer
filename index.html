@@ -9,8 +9,12 @@
 </head>
 <body>
 <div id="search-wrapper">
-    <input type="text" id="searchTerm" placeholder="Enter camera name..." onkeyup="searchOnEnter(event)">
+    <input type="text" id="searchTerm" placeholder="Example: Building-room" onkeyup="searchOnEnter(event)">
     <button onclick="filterCameras()">Search</button>
+</div>
+<!-- Welcome message -->
+<div id="welcomeMessage">
+    <p>Welcome! Please query your live camera group.</p>
 </div>
 <div class="player-wrapper" id="wrapper"></div>
 
@@ -65,13 +69,15 @@
         });
         playerContainers = {}; // Reset the playerContainers tracking object after cleanup
     }
+    // Remove window.onload = fetchCameras; to prevent auto-loading of cameras
     function filterCameras() {
         const searchTerm = document.getElementById('searchTerm').value.toLowerCase();
         cleanupPlayers(); // Cleanup existing players before filtering
+        // Hide welcome message
+        document.getElementById('welcomeMessage').style.display = 'none';
         cameras.filter(camera => camera.toLowerCase().includes(searchTerm))
                .forEach(camera => addCamera(camera));
     }
-
     function searchOnEnter(event) {
         if (event.keyCode === 13) {
             filterCameras();
@@ -103,7 +109,7 @@
         xhr.send();
     }
 
-    window.onload = fetchCameras;
+    //window.onload = fetchCameras;
 </script>
 </body>
 </html>
