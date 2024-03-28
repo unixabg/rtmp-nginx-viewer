@@ -8,14 +8,20 @@
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
-<!-- Welcome message -->
-<div id="welcomeMessage">
-    <p>Welcome! Please query your live camera group.</p>
+<div id="welcomeContainer">
+    <div id="welcomeMessage">
+        <p>Welcome! Please query your live camera group.</p>
+    </div>
 </div>
-<div id="search-wrapper">
-    <input type="text" id="searchTerm" placeholder="Example: Building-room" onkeyup="searchOnEnter(event)">
-    <button onclick="filterCameras()">Search</button>
+<div id="searchContainer">
+    <div id="search-wrapper">
+        <input type="text" id="searchTerm" placeholder="Example: Building-room" onkeyup="searchOnEnter(event)">
+        <button onclick="filterCameras()">Search</button>
+    </div>
 </div>
+<br>
+<br>
+<br>
 <div class="player-wrapper" id="wrapper"></div>
 
 <script>
@@ -39,46 +45,52 @@
         container.appendChild(overlay);
         wrapper.appendChild(container);
 
-        const player = OvenPlayer.create(playerDiv.id, {
-            autoStart: true,
-            autoFallback: false,
-            mute: true,
-            controls: true,
-            sources: [{
-                "file": `hls/${name}.m3u8`,
-                "label": "hls",
-                "type": "hls"
-            }],
-        });
+        // No player initialization here. Just preparing the containers.
+    }
 
-        playerContainers[playerDiv.id] = player; // Track the player instance
+    function startPlayer(name) {
+        const playerDivId = 'player-' + name;
+        if (!playerContainers[playerDivId]) { // Check if player was already created
+            const player = OvenPlayer.create(playerDivId, {
+                autoStart: true,
+                autoFallback: false,
+                mute: true,
+                controls: true,
+                sources: [{
+                    "file": `hls/${name}.m3u8`,
+                    "label": "hls",
+                    "type": "hls"
+                }],
+            });
+
+            playerContainers[playerDivId] = player; // Track the player instance
+        }
     }
 
     function cleanupPlayers() {
         Object.keys(playerContainers).forEach(containerId => {
-            // Assume the parent of the player container is what we want to remove.
             let playerElement = document.getElementById(containerId);
             if (playerElement && playerElement.parentNode) {
-                let parentContainer = playerElement.parentNode; // This is the .camera-container
+                let parentContainer = playerElement.parentNode;
                 if (parentContainer && parentContainer.parentNode) {
-                    // Remove the entire .camera-container, which includes the player and the overlay
                     parentContainer.parentNode.removeChild(parentContainer);
                 }
                 console.log('Complete camera container removed:', containerId);
             }
         });
-        playerContainers = {}; // Reset the playerContainers tracking object after cleanup
+        playerContainers = {};
     }
-    // Remove window.onload = fetchCameras; to prevent auto-loading of cameras
+
     function filterCameras() {
-        // Retrieve the search term and trim whitespace
         const searchTerm = document.getElementById('searchTerm').value.trim().toLowerCase();
         cleanupPlayers(); // Cleanup existing players before filtering
-        // Hide welcome message
-        document.getElementById('welcomeMessage').style.display = 'none';
         cameras.filter(camera => camera.toLowerCase().includes(searchTerm))
-           .forEach(camera => addCamera(camera));
+           .forEach(camera => {
+               addCamera(camera); // Prepare the container and overlay
+               startPlayer(camera); // Now start the player
+           });
     }
+
     function searchOnEnter(event) {
         if (event.keyCode === 13) {
             filterCameras();
@@ -104,13 +116,13 @@
                 }
 
                 cameras.sort();
-                cameras.forEach(camera => addCamera(camera));
+                // Cameras are now fetched and stored. Players are not created here.
             }
         };
         xhr.send();
     }
 
-    //window.onload = fetchCameras;
+    window.onload = fetchCameras;
 </script>
 </body>
 </html>
