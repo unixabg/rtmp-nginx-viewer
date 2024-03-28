@@ -71,12 +71,13 @@
     }
     // Remove window.onload = fetchCameras; to prevent auto-loading of cameras
     function filterCameras() {
-        const searchTerm = document.getElementById('searchTerm').value.toLowerCase();
+        // Retrieve the search term and trim whitespace
+        const searchTerm = document.getElementById('searchTerm').value.trim().toLowerCase();
         cleanupPlayers(); // Cleanup existing players before filtering
         // Hide welcome message
         document.getElementById('welcomeMessage').style.display = 'none';
         cameras.filter(camera => camera.toLowerCase().includes(searchTerm))
-               .forEach(camera => addCamera(camera));
+           .forEach(camera => addCamera(camera));
     }
     function searchOnEnter(event) {
         if (event.keyCode === 13) {
