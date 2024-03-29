@@ -84,11 +84,13 @@
     function filterCameras() {
         const searchTerm = document.getElementById('searchTerm').value.trim().toLowerCase();
         cleanupPlayers(); // Cleanup existing players before filtering
+        // Hide welcome message
+        document.getElementById('welcomeMessage').style.display = 'none';
         cameras.filter(camera => camera.toLowerCase().includes(searchTerm))
-           .forEach(camera => {
-               addCamera(camera); // Prepare the container and overlay
-               startPlayer(camera); // Now start the player
-           });
+            .forEach(camera => {
+                addCamera(camera); // Prepare the container and overlay
+                startPlayer(camera); // Now start the player
+            });
     }
 
     function searchOnEnter(event) {
