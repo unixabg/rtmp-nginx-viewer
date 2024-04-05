@@ -81,16 +81,27 @@
         playerContainers = {};
     }
 
+
     function filterCameras() {
         const searchTerm = document.getElementById('searchTerm').value.trim().toLowerCase();
+        const searchTerms = searchTerm.split(' '); // Split input into an array of words
+
         cleanupPlayers(); // Cleanup existing players before filtering
+
         // Hide welcome message
         document.getElementById('welcomeMessage').style.display = 'none';
-        cameras.filter(camera => camera.toLowerCase().includes(searchTerm))
-            .forEach(camera => {
-                addCamera(camera); // Prepare the container and overlay
-                startPlayer(camera); // Now start the player
-            });
+
+        // Start with all cameras, then reduce the list by filtering with each term
+        let filteredCameras = cameras;
+        searchTerms.forEach(term => {
+            filteredCameras = filteredCameras.filter(camera => camera.toLowerCase().includes(term));
+        });
+
+        // Now, filteredCameras contains only cameras that match all search terms
+        filteredCameras.forEach(camera => {
+            addCamera(camera); // Prepare the container and overlay
+            startPlayer(camera); // Now start the player
+        });
     }
 
     function searchOnEnter(event) {
