@@ -16,7 +16,8 @@
 <div id="searchContainer">
     <div id="search-wrapper">
         <input type="text" id="searchTerm" placeholder="Example: Building room" onkeyup="searchOnEnter(event)">
-        <button onclick="filterCameras()">Search</button>
+        <button id="searchButton" onclick="filterCameras()">Search</button>
+        <button id="resetButton" onclick="window.location.reload()" style="display: none;">Reset</button>
     </div>
 </div>
 <br>
@@ -81,7 +82,6 @@
         playerContainers = {};
     }
 
-
     function filterCameras() {
         const searchTerm = document.getElementById('searchTerm').value.trim().toLowerCase();
         const searchTerms = searchTerm.split(' '); // Split input into an array of words
@@ -90,6 +90,12 @@
 
         // Hide welcome message
         document.getElementById('welcomeMessage').style.display = 'none';
+
+        // Hide search button
+        document.getElementById('searchButton').style.display = 'none';
+
+        // Make the "Reset Search" button visible
+        document.getElementById('resetButton').style.display = 'inline'; // Or 'block'
 
         // Start with all cameras, then reduce the list by filtering with each term
         let filteredCameras = cameras;
