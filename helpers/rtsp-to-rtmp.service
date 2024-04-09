@@ -5,6 +5,7 @@ Wants=nginx.service
 
 [Service]
 Type=simple
+ExecStartPre=/bin/sleep 10
 ExecStart=/opt/rtsp-to-rtmp
 Restart=on-failure
 RestartSec=10
