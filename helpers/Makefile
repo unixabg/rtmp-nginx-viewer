@@ -1,4 +1,4 @@
-.PHONY: install
+.PHONY: install uninstall purge
 
 install:
 	# Ensure /opt and /etc/rtsp-to-rtmp directories exist
