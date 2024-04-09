@@ -1,0 +1,14 @@
+[Unit]
+Description=RTSP to RTMP Helper Service
+After=network.target nginx.service
+Wants=nginx.service
+
+[Service]
+Type=simple
+ExecStart=/opt/rtsp-to-rtmp
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+
