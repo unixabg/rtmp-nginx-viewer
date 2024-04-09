@@ -10,21 +10,22 @@ body {
 }
 
 #welcomeMessage {
-    margin: 10px 0; /* Adjust spacing around these elements */
+    margin: 5px 0; /* Adjust spacing around these elements */
     font-size: 24px; /* Increase the text size */
     text-align: center; /* Center the text horizontally */
     /* Optional styles to enhance appearance */
-    padding: 5px;
+    padding: 10px;
     border: 2px solid #ccc;
-    border-radius: 10px;
+    border-radius: 50px;
     box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+    background: white;
 }
 #search-wrapper {
     margin: 10px 0; /* Adjust spacing around these elements */
 }
 #search-wrapper {
     clear: both; /* If using floats, ensure this element doesn't overlap with floated elements above */
-    margin-top: 20px; /* Ensure there's enough space between elements */
+    margin-top: 5px; /* Ensure there's enough space between elements */
 }
 .player-wrapper {
     display: grid;
