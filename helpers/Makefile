@@ -16,7 +16,25 @@ install:
 	# Copy cameras.conf to /etc/rtsp-to-rtmp
 	cp rtsp-to-rtmp.cameras /etc/rtsp-to-rtmp/cameras
 
+	# Remove the systemd service file
+	cp rtsp-to-rtmp.service /etc/systemd/system/rtsp-to-rtmp.service
+
+	# Reload systemd to apply changes
+	systemctl daemon-reload
+
 uninstall:
+# Stop the systemd service
+	systemctl stop rtsp-to-rtmp.service
+
+	# Disable the systemd service to not start on boot
+	systemctl disable rtsp-to-rtmp.service
+
+	# Remove the systemd service file
+	rm -f /etc/systemd/system/rtsp-to-rtmp.service
+
+	# Reload systemd to apply changes
+	systemctl daemon-reload
+
 	# Remove the main script
 	rm -f /opt/rtsp-to-rtmp
 
