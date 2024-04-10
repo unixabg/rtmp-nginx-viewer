@@ -9,6 +9,7 @@ install:
 	# Backup existing configurations and web content
 	cp $(NGINX_CONF_DIR)/nginx.conf $(NGINX_CONF_DIR)/nginx.conf.backup
 	cp $(SITES_AVAILABLE)/default $(SITES_AVAILABLE)/default.backup
+	[ -f $(NGINX_CONF_DIR)/cameras.conf ] && cp $(NGINX_CONF_DIR)/cameras.conf $(NGINX_CONF_DIR)/cameras.conf.backup
 	[ -f $(WEB_ROOT)/index.html ] && cp $(WEB_ROOT)/index.html $(WEB_ROOT)/index.html.backup
 
 	# Copy new configurations and web content
@@ -26,6 +27,8 @@ uninstall:
 	# Restore backup configurations
 	mv $(NGINX_CONF_DIR)/nginx.conf.backup $(NGINX_CONF_DIR)/nginx.conf
 	mv $(SITES_AVAILABLE)/default.backup $(SITES_AVAILABLE)/default
+	# Restore original cameras.conf if backup exists
+	[ -f $(NGINX_CONF_DIR)/cameras.conf.backup ] && mv $(NGINX_CONF_DIR)/cameras.conf.backup $(NGINX_CONF_DIR)/cameras.conf
 
 	# Restore original web content if backup exists
 	[ -f $(WEB_ROOT)/index.html.backup ] && mv $(WEB_ROOT)/index.html.backup $(WEB_ROOT)/index.html
