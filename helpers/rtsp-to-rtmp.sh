@@ -7,15 +7,20 @@ declare -a FIFO_PATHS
 
 # Function to handle script termination gracefully
 cleanup() {
-	echo "Shutting down script gracefully..."
+	echo "$(date) - Starting cleanup process..." >> "$SCRIPT_LOG"
 	# Kill all child processes associated with FFmpeg and FIFO handling
 	for PID in "${CHILD_PIDS[@]}"; do
+		echo "$(date) - Terminating process PID: $PID" >> "$SCRIPT_LOG"
 		kill -SIGTERM "$PID" 2>/dev/null
 	done
 	# Remove FIFOs
 	for FIFO in "${FIFO_PATHS[@]}"; do
-		[[ -p "$FIFO" ]] && rm -f "$FIFO"
+		if [[ -p "$FIFO" ]]; then
+			echo "$(date) - Removing FIFO: $FIFO" >> "$SCRIPT_LOG"
+			rm -f "$FIFO"
+		fi
 	done
+	echo "$(date) - Cleanup process completed." >> "$SCRIPT_LOG"
 	exit 0
 }
 trap cleanup SIGINT SIGTERM
@@ -39,11 +44,18 @@ while IFS=' ' read -r CAMERA_NAME RTSP_URL; do
 		RETRY_DELAY=5
 		MAX_RETRY_DELAY=60
 		while true; do
+			echo "$(date) - Starting FFmpeg for ${CAMERA_NAME}" >> "$LOG_FILE"
 			ffmpeg -timeout 5000000 -i "$RTSP_URL" -acodec copy -vcodec copy -f flv "${RTMP_SERVER_URL}/${CAMERA_NAME}" > "$FIFO_PATH" 2>&1
-			echo "$(date) - Stream $CAMERA_NAME died, restarting in $RETRY_DELAY seconds..."
-			sleep $RETRY_DELAY
-			[ $RETRY_DELAY -lt $MAX_RETRY_DELAY ] && RETRY_DELAY=$((RETRY_DELAY * 2))
-			[ $RETRY_DELAY -gt $MAX_RETRY_DELAY ] && RETRY_DELAY=$MAX_RETRY_DELAY
+			EXIT_STATUS=$?
+			if [ $EXIT_STATUS -ne 0 ]; then
+				echo "$(date) - FFmpeg died unexpectedly for ${CAMERA_NAME}, restarting in $RETRY_DELAY seconds..." >> "$LOG_FILE"
+				sleep $RETRY_DELAY
+				[ $RETRY_DELAY -lt $MAX_RETRY_DELAY ] && RETRY_DELAY=$((RETRY_DELAY * 2))
+				[ $RETRY_DELAY -gt $MAX_RETRY_DELAY ] && RETRY_DELAY=$MAX_RETRY_DELAY
+			else
+				echo "$(date) - FFmpeg exited normally for ${CAMERA_NAME}, no restart needed." >> "$LOG_FILE"
+				break
+			fi
 		done
 	) &
 	CHILD_PIDS+=("$!")
