@@ -1,9 +1,13 @@
 #!/bin/bash
 
+# Write our pid file for logrotate signal
+echo $$ > /var/run/rtsp-to-rtmp.pid
+
 CONFIG_FILE="/etc/rtsp-to-rtmp/cameras"
 RTMP_SERVER_URL="rtmp://localhost/cam"
 declare -a CHILD_PIDS
 declare -a FIFO_PATHS
+SCRIPT_LOG="/var/log/rtsp-to-rtmp/script_log.log"
 
 # Function to handle script termination gracefully
 cleanup() {
@@ -23,7 +27,19 @@ cleanup() {
 	echo "$(date) - Cleanup process completed." >> "$SCRIPT_LOG"
 	exit 0
 }
+
+# Function to handle log rotation
+rotate_logs() {
+	echo "$(date) - Rotating logs" >> "$SCRIPT_LOG"
+	for FIFO in "${FIFO_PATHS[@]}"; do
+		exec 3>&-  # Close the current log file descriptor
+		exec 3>>"${LOG_FILE}"  # Reopen the new log file descriptor
+		echo "$(date) - Reopened log file for ${FIFO}" >> "${LOG_FILE}"
+	done
+}
+
 trap cleanup SIGINT SIGTERM
+trap rotate_logs USR1
 
 while IFS=' ' read -r CAMERA_NAME RTSP_URL; do
 	[[ -z "$CAMERA_NAME" || -z "$RTSP_URL" || "$CAMERA_NAME" =~ ^# ]] && continue
@@ -36,7 +52,12 @@ while IFS=' ' read -r CAMERA_NAME RTSP_URL; do
 	[[ ! -p "$FIFO_PATH" ]] && mkfifo "$FIFO_PATH"
 
 	# Start a background process to redirect FIFO output to the log file
-	cat "$FIFO_PATH" >> "$LOG_FILE" &
+	(
+		exec 3>>"$LOG_FILE"
+		while read line; do
+			echo "$line" >&3
+		done < "$FIFO_PATH"
+	) &
 	CHILD_PIDS+=("$!")
 
 	# Launch FFmpeg using the FIFO for logging
