@@ -7,7 +7,7 @@ CONFIG_FILE="/etc/rtsp-to-rtmp/cameras"
 RTMP_SERVER_URL="rtmp://localhost/cam"
 declare -a CHILD_PIDS
 declare -a FIFO_PATHS
-SCRIPT_LOG="/var/log/rtsp-to-rtmp/script_log.log"
+SCRIPT_LOG="/var/log/rtsp-to-rtmp/script_log"
 
 # Function to handle script termination gracefully
 cleanup() {
