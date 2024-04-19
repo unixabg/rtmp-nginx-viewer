@@ -84,6 +84,15 @@
 
     function filterCameras() {
         const searchTerm = document.getElementById('searchTerm').value.trim().toLowerCase();
+
+        // Check for blank search term
+        if (!searchTerm) {
+            // Display invalid search popup (implementation depends on your preference)
+            alert('Please enter a search term.');
+            return; // Exit the function without further processing
+        }
+
+        // If search term is not blank, continue with existing logic...
         const searchTerms = searchTerm.split(' '); // Split input into an array of words
 
         cleanupPlayers(); // Cleanup existing players before filtering
