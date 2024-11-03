@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Camera Recordings History</title>
+    <link rel="stylesheet" href="style.css">
+    <!-- Ensure OvenPlayer and HLS script are correctly referenced -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr/dist/flatpickr.min.css">
+    <script src="//cdn.jsdelivr.net/npm/hls.js@latest/dist/hls.min.js"></script>
+    <script src="//cdn.jsdelivr.net/npm/ovenplayer/dist/ovenplayer.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/flatpickr"></script>
+</head>
+<body>
+<div id="welcomeContainer">
+    <div id="welcomeMessage">
+        <p>Welcome! Please query your camera recordings history.</p>
+    </div>
+</div>
+<div id="searchContainer">
+    <div id="search-wrapper">
+        <input type="text" id="searchTerm" placeholder="Example: Building room" onkeyup="searchOnEnter(event)" style="border-radius: 20px 20px 20px 20px;">
+        <input type="text" id="datetimePicker" placeholder="Select Date and Time">
+        <button id="searchButton" onclick="filterRecordings()">Search</button>
+        <button id="resetButton" onclick="window.location.reload()" style="display: none;">Reset</button>
+    </div>
+</div>
+<br>
+<br>
+<div class="player-wrapper" id="wrapper"></div>
+<div id="noResultsMessage" style="display: none; color: red; text-align: center;">
+    <p>No matching recordings found. Please adjust your search criteria and try again.</p>
+</div>
+
+<script>
+    document.addEventListener('DOMContentLoaded', function() {
+        flatpickr("#datetimePicker", {
+            enableTime: true,
+            dateFormat: "Y-m-d H:i",
+        });
+    });
+
+    let recordings = [];
+    let playerContainers = {}; // Tracks player instances by their container ID
+
+    function addRecording(name, date, time) {
+        let wrapper = document.getElementById('wrapper');
+        let container = document.createElement('div');
+        container.className = 'camera-container';
+
+        let playerDiv = document.createElement('div');
+        playerDiv.className = 'camera-preview';
+        playerDiv.id = 'player-' + name + '-' + date + '-' + time; // Unique ID for the player container
+
+        let overlay = document.createElement('div');
+        overlay.className = 'camera-overlay';
+        overlay.innerText = name + ' - ' + date + ' ' + time; // Set the camera name, date, and time as the text
+
+        container.appendChild(playerDiv);
+        container.appendChild(overlay);
+        wrapper.appendChild(container);
+    }
+
+    function startPlayer(name, date, time, fullName) {
+        const playerDivId = 'player-' + name + '-' + date + '-' + time;
+        if (!playerContainers[playerDivId]) { // Check if player was already created
+            const player = OvenPlayer.create(playerDivId, {
+                autoStart: false,
+                controls: true,
+                sources: [{
+                    "file": `recordings/${fullName}.mp4`,
+                    "label": "mp4",
+                    "type": "mp4"
+                }],
+            });
+
+            playerContainers[playerDivId] = player; // Track the player instance
+        }
+    }
+
+    function cleanupPlayers() {
+        Object.keys(playerContainers).forEach(containerId => {
+            let playerElement = document.getElementById(containerId);
+            if (playerElement && playerElement.parentNode) {
+                let parentContainer = playerElement.parentNode;
+                if (parentContainer && parentContainer.parentNode) {
+                    parentContainer.parentNode.removeChild(parentContainer);
+                }
+                console.log('Complete camera container removed:', containerId);
+            }
+        });
+        playerContainers = {};
+    }
+
+    function filterRecordings() {
+        const searchTerm = document.getElementById('searchTerm').value.trim().toLowerCase();
+        const datetimeValue = document.getElementById('datetimePicker').value;
+
+        // Check for blank search term or missing datetime
+        if (!searchTerm || !datetimeValue) {
+            alert('Please enter a search term and select a date and time.');
+            return;
+        }
+
+        const [selectedDate, startTime] = datetimeValue.split(' ');
+
+        cleanupPlayers(); // Cleanup existing players before filtering
+
+        // Hide welcome message
+        document.getElementById('welcomeMessage').style.display = 'none';
+
+        // Hide search button
+        document.getElementById('searchButton').style.display = 'none';
+
+        // Make the "Reset Search" button visible
+        document.getElementById('resetButton').style.display = 'inline';
+
+        // Fetch recordings based on search criteria
+        fetchRecordings(searchTerm, selectedDate, startTime);
+    }
+
+    function searchOnEnter(event) {
+        if (event.keyCode === 13) {
+            filterRecordings();
+        }
+    }
+
+    function fetchRecordings(searchTerm, selectedDate, startTime) {
+        console.log('Request recorded streams');
+        var xhr = new XMLHttpRequest();
+        xhr.open('GET', `${window.location.origin}/recordings`, true);
+        xhr.responseType = 'text'; // Change to 'text' to parse directory listing
+        xhr.onload = function () {
+            if (xhr.status === 200) {
+                const responseText = xhr.responseText;
+                recordings = parseRecordingFiles(responseText);
+
+                // Sort recordings by date and time
+                recordings.sort((a, b) => new Date(`${a.date} ${a.time}`) - new Date(`${b.date} ${b.time}`));
+
+                let filteredRecordings = recordings.filter(recording => {
+                    return recording.name.toLowerCase().includes(searchTerm) &&
+                        recording.date === selectedDate &&
+                        recording.time.startsWith(startTime.substring(0, 2)); // Match the hour
+                });
+
+                // If no recordings match the criteria, display a message
+                if (filteredRecordings.length === 0) {
+                    document.getElementById('noResultsMessage').style.display = 'block';
+                } else {
+                    document.getElementById('noResultsMessage').style.display = 'none';
+                    // Display filtered recordings
+                    filteredRecordings.forEach(recording => {
+                        addRecording(recording.name, recording.date, recording.time);
+                        startPlayer(recording.name, recording.date, recording.time, recording.fullName);
+                    });
+                }
+            }
+        };
+        xhr.send();
+    }
+
+    function parseRecordingFiles(responseText) {
+        const lines = responseText.split('\n');
+        const recordings = [];
+
+        // Regular expression to match lines containing .mp4 files with date and time in the filename
+        const regex = /<a href="([^.]+-[^.]+-\d{8}-\d{6}\.mp4)">.*?<\/a>/;
+
+        lines.forEach(line => {
+            const match = line.match(regex);
+            if (match) {
+                const fullName = match[1].replace('.mp4', '');
+                const parts = fullName.split('-');
+                const cameraName = parts[0];
+                const date = parts[2].replace(/(\d{4})(\d{2})(\d{2})/, '$1-$2-$3');
+                const time = parts[3].replace(/(\d{2})(\d{2})(\d{2})/, '$1:$2:$3');
+
+                recordings.push({
+                    name: cameraName,
+                    date: date,
+                    time: time,
+                    fullName: fullName
+                });
+            }
+        });
+
+        return recordings;
+    }
+</script>
+</body>
+</html>
+

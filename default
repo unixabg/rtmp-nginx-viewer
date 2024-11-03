@@ -68,6 +68,13 @@ server {
 		add_header Cache-Control no-cache;
 	}
 
+	#location /recordings {
+	#	# Serve video fragments
+	#	alias /videos/recordings;
+	#	add_header Cache-Control no-cache;
+	#	autoindex on;
+	#	autoindex_localtime on;
+	#}
 
 	location / {
 		# First attempt to serve request as file, then
