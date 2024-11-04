@@ -18,6 +18,7 @@ install:
 	ln -sfn $(SITES_AVAILABLE)/default $(SITES_ENABLED)/default
 	cp cameras.conf $(NGINX_CONF_DIR)/
 	cp index.html $(WEB_ROOT)/index.html
+	cp index.html $(WEB_ROOT)/history.html
 	cp style.css $(WEB_ROOT)/style.css
 
 	# Reload Nginx to apply changes
@@ -33,8 +34,9 @@ uninstall:
 	# Restore original web content if backup exists
 	[ -f $(WEB_ROOT)/index.html.backup ] && mv $(WEB_ROOT)/index.html.backup $(WEB_ROOT)/index.html
 
-	# Remove style.css it was added by the install
+	# Remove style.css and history.html that was added by the install
 	rm $(WEB_ROOT)/style.css
+	rm $(WEB_ROOT)/history.html
 
 	# Reload Nginx to apply changes
 	systemctl reload nginx
