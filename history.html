@@ -102,7 +102,8 @@
         }
 
         const searchTerms = searchTerm.split(' '); // Split input into an array of words
-        const [selectedDate, startTime] = datetimeValue.split(' ');
+        const selectedDateTime = new Date(datetimeValue.replace(' ', 'T')); // Convert input into a valid Date object
+        const endDateTime = new Date(selectedDateTime.getTime() + 60 * 60 * 1000); // Add 1 hour to the selected date and time
 
         cleanupPlayers(); // Cleanup existing players before filtering
 
@@ -116,7 +117,7 @@
         document.getElementById('resetButton').style.display = 'inline';
 
         // Fetch recordings based on search criteria
-        fetchRecordings(searchTerms, selectedDate, startTime);
+        fetchRecordings(searchTerms, selectedDateTime, endDateTime);
     }
 
     function searchOnEnter(event) {
@@ -125,7 +126,7 @@
         }
     }
 
-    function fetchRecordings(searchTerms, selectedDate, startTime) {
+    function fetchRecordings(searchTerms, startDateTime, endDateTime) {
         console.log('Request recorded streams');
         var xhr = new XMLHttpRequest();
         xhr.open('GET', `${window.location.origin}/recordings`, true);
@@ -139,9 +140,10 @@
                 recordings.sort((a, b) => new Date(`${a.date} ${a.time}`) - new Date(`${b.date} ${b.time}`));
 
                 let filteredRecordings = recordings.filter(recording => {
+                    const recordingDateTime = new Date(`${recording.date}T${recording.time}`);
                     return searchTerms.every(term => recording.name.toLowerCase().includes(term)) &&
-                        recording.date === selectedDate &&
-                        recording.time.startsWith(startTime.substring(0, 2)); // Match the hour
+                        recordingDateTime >= startDateTime &&
+                        recordingDateTime < endDateTime;
                 });
 
                 // If no recordings match the criteria, display a message
@@ -155,7 +157,7 @@
                         startPlayer(recording.name, recording.date, recording.time, recording.fullName);
                     });
                 }
-           }
+            }
         };
         xhr.send();
     }
