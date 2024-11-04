@@ -32,7 +32,7 @@ Install the project:
 
 Add your cameras to the /etc/nginx/cameras.conf and be mindful for the camera name to use something like MyCamName or My_Cam_Name. The reason for the naming conventions is that if you want the recordings feature in proper naming will break the regex call I am making in the code to present the videos. If you have a lot of cameras best to be overly descriptive like MyDrivewayWest222, this will help provide a granular search and not overwhelm your browser.
 
-Restart nginx
+Restart nginx:
 ```systemctl restart nginx```
 
 If you want the nvr features below is the general outline
