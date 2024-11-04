@@ -101,6 +101,7 @@
             return;
         }
 
+        const searchTerms = searchTerm.split(' '); // Split input into an array of words
         const [selectedDate, startTime] = datetimeValue.split(' ');
 
         cleanupPlayers(); // Cleanup existing players before filtering
@@ -115,7 +116,7 @@
         document.getElementById('resetButton').style.display = 'inline';
 
         // Fetch recordings based on search criteria
-        fetchRecordings(searchTerm, selectedDate, startTime);
+        fetchRecordings(searchTerms, selectedDate, startTime);
     }
 
     function searchOnEnter(event) {
@@ -124,7 +125,7 @@
         }
     }
 
-    function fetchRecordings(searchTerm, selectedDate, startTime) {
+    function fetchRecordings(searchTerms, selectedDate, startTime) {
         console.log('Request recorded streams');
         var xhr = new XMLHttpRequest();
         xhr.open('GET', `${window.location.origin}/recordings`, true);
@@ -138,7 +139,7 @@
                 recordings.sort((a, b) => new Date(`${a.date} ${a.time}`) - new Date(`${b.date} ${b.time}`));
 
                 let filteredRecordings = recordings.filter(recording => {
-                    return recording.name.toLowerCase().includes(searchTerm) &&
+                    return searchTerms.every(term => recording.name.toLowerCase().includes(term)) &&
                         recording.date === selectedDate &&
                         recording.time.startsWith(startTime.substring(0, 2)); // Match the hour
                 });
@@ -154,7 +155,7 @@
                         startPlayer(recording.name, recording.date, recording.time, recording.fullName);
                     });
                 }
-            }
+           }
         };
         xhr.send();
     }
