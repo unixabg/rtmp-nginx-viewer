@@ -3,7 +3,7 @@
 
 If you are looking for a lightweight way to offer a presentation for your RTMP and RTSP streams this project may assist. The project is based on the usage of cameras that support RTMP streams (and with a helper RTSP streams).
 
-Recording for more of a nvr type setup is also possible. Largest deployment is 250+ cameras running Debian with the following hardware specifications:
+Recording for more of a nvr type setup is also possible. Largest deployment is 230+ cameras running Debian with the following hardware specifications:
 
 ** Note: Hardware specifications will vary based on each setup. **
 
