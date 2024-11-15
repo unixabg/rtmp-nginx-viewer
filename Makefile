@@ -18,7 +18,7 @@ install:
 	ln -sfn $(SITES_AVAILABLE)/default $(SITES_ENABLED)/default
 	install -m 644 cameras.conf $(NGINX_CONF_DIR)/
 	install -m 644 index.html $(WEB_ROOT)/index.html
-	install -m 644 index.html $(WEB_ROOT)/history.html
+	install -m 644 history.html $(WEB_ROOT)/history.html
 	install -m 644 style.css $(WEB_ROOT)/style.css
 
 	# Reload Nginx if installed and active
