@@ -11,6 +11,15 @@
 <div id="welcomeContainer">
     <div id="welcomeMessage">
         <p>Welcome! Please query your live camera group.</p>
+        <div id="versionInfo" style="text-align: center; margin: 10px 0; font-size: 0.6em;"></div>
+        <script>
+            fetch('/version.txt')
+                .then(response => response.text())
+                .then(version => {
+                    document.getElementById('versionInfo').innerText = `${version.trim()}`;
+                })
+                .catch(error => console.error('Error fetching version:', error));
+        </script>
     </div>
 </div>
 <div id="searchContainer">
