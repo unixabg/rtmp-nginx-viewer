@@ -1,4 +1,4 @@
-.PHONY: install uninstall purge
+.PHONY: install upgrade uninstall purge
 
 WEB_ROOT=/var/www/html
 NGINX_CONF_DIR=/etc/nginx
@@ -27,6 +27,13 @@ install:
 	elif command -v nginx > /dev/null; then \
 		nginx -s reload; \
 	fi
+
+upgrade:
+	@echo "Upgrading components: index.html, history.html, and version.txt to /var/www/html/"
+	install -m 644 index.html /var/www/html/
+	install -m 644 history.html /var/www/html/
+	install -m 644 version.txt /var/www/html/
+	@echo "Upgrade complete."
 
 uninstall:
 	# Restore backup configurations if they exist
