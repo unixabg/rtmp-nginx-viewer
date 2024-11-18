@@ -20,9 +20,9 @@ Become root user:
 
 ```sudo -i```
 
-Install nginx and the nginx-rtmp-module:
+Install some things I find helpful in container setups and the nginx and nginx-rtmp-module:
 
-```apt install nginx libnginx-mod-rtmp```
+```apt install build-essential ffmpeg vim git nginx libnginx-mod-rtmp```
 
 Clone the repo:
 
