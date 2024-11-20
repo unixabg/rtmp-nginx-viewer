@@ -7,19 +7,19 @@
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr/dist/flatpickr.min.css">
     <script src="//cdn.jsdelivr.net/npm/hls.js@latest/dist/hls.min.js"></script>
     <script src="//cdn.jsdelivr.net/npm/ovenplayer/dist/ovenplayer.js"></script>
-<script>
-    // Function to update the label to reflect the current time window
-    function updateCurrentWindowLabel(direction) {
-        let windowTime = currentWindowDuration / (60 * 1000); // Convert milliseconds to minutes
-        let description = "Current Time Window (" + windowTime + " Minutes)";
-        if (direction > 0) {
-            description += " - " + (direction * windowTime) + " min ahead of search";
-        } else if (direction < 0) {
-            description += " - " + Math.abs(direction * windowTime) + " min behind search";
+    <script>
+        // Function to update the label to reflect the current time window
+        function updateCurrentWindowLabel(direction) {
+            let windowTime = currentWindowDuration / (60 * 1000); // Convert milliseconds to minutes
+            let description = "Current Time Window (" + windowTime + " Minutes)";
+            if (direction > 0) {
+                description += " - " + (direction * windowTime) + " min ahead of search";
+            } else if (direction < 0) {
+                description += " - " + Math.abs(direction * windowTime) + " min behind search";
+            }
+            document.getElementById('currentWindow').innerText = description;
         }
-        document.getElementById('currentWindow').innerText = description;
-    }
-</script>
+    </script>
     <script src="https://cdn.jsdelivr.net/npm/flatpickr"></script>
 </head>
 <body>
@@ -68,12 +68,48 @@
             }
         };
     
-        // Initialize the datetime picker
-        flatpickr("#datetimePicker", {
+        // Initialize flatpickr with no enabled dates initially
+        const flatpickrInstance = flatpickr("#datetimePicker", {
             enableTime: true,
             dateFormat: "Y-m-d H:i",
+            defaultDate: new Date() // Set default date to current time to retain selection after search
         });
+
+        // Fetch available recordings and highlight available dates
+        fetchAvailableDates(flatpickrInstance);
     });
+
+    // Fetch available dates based on recording files from /recordings endpoint
+    function fetchAvailableDates(flatpickrInstance) {
+        fetch('/recordings')
+            .then(response => response.text()) // Assuming /recordings returns a list of files in plain text
+            .then(responseText => {
+                const availableDates = parseRecordingDates(responseText);
+                flatpickrInstance.set('enable', availableDates);
+            })
+            .catch(error => console.error('Error fetching available dates:', error));
+    }
+
+    // Parse the response text from the server to extract recording dates
+    function parseRecordingDates(responseText) {
+        const lines = responseText.split('\n');
+        const dates = new Set();
+
+        // Regular expression to match lines containing .mp4 files with date in the filename
+        const regex = /<a href="([^.]+-[^.]+-(\d{8})-\d{6}\.mp4)">.*?<\/a>/;
+
+        lines.forEach(line => {
+            const match = line.match(regex);
+            if (match) {
+                const dateStr = match[2]; // Extract the date part (YYYYMMDD)
+                const formattedDate = `${dateStr.substring(0, 4)}-${dateStr.substring(4, 6)}-${dateStr.substring(6, 8)}`;
+                dates.add(formattedDate); // Add the date to the set
+            }
+        });
+
+        // Convert the set of dates to an array of Date objects
+        return Array.from(dates).map(dateStr => new Date(dateStr));
+    }
 
     let recordings = []; // Array to store recording information fetched from the server
     let playerContainers = {}; // Object to store player instances for each recording
@@ -152,7 +188,8 @@
     // Function to navigate to a different time window (previous or next)
     function navigateTimeWindow(direction) {
         currentWindowStart = new Date(currentWindowStart.getTime() + direction * currentWindowDuration);
-        document.getElementById('datetimePicker')._flatpickr.setDate(currentWindowStart);
+        document.getElementById('datetimePicker')._flatpickr.setDate(currentWindowStart, true);
+document.getElementById('datetimePicker').value = currentWindowStart.toLocaleString('en-CA', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }).replace(',', '').replace(/\//g, '-')
         updateCurrentWindowLabel(direction); // Update the time window label to reflect navigation
         fetchAndDisplayRecordings();
     }
