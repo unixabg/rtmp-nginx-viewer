@@ -7,19 +7,6 @@
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr/dist/flatpickr.min.css">
     <script src="//cdn.jsdelivr.net/npm/hls.js@latest/dist/hls.min.js"></script>
     <script src="//cdn.jsdelivr.net/npm/ovenplayer/dist/ovenplayer.js"></script>
-    <script>
-        // Function to update the label to reflect the current time window
-        function updateCurrentWindowLabel(direction) {
-            let windowTime = currentWindowDuration / (60 * 1000); // Convert milliseconds to minutes
-            let description = "Current Time Window (" + windowTime + " Minutes)";
-            if (direction > 0) {
-                description += " - " + (direction * windowTime) + " min ahead of search";
-            } else if (direction < 0) {
-                description += " - " + Math.abs(direction * windowTime) + " min behind search";
-            }
-            document.getElementById('currentWindow').innerText = description;
-        }
-    </script>
     <script src="https://cdn.jsdelivr.net/npm/flatpickr"></script>
 </head>
 <body>
@@ -79,6 +66,26 @@
         fetchAvailableDates(flatpickrInstance);
     });
 
+    let recordings = []; // Array to store recording information fetched from the server
+    let playerContainers = {}; // Object to store player instances for each recording
+    let currentWindowStart = new Date(); // Variable to track the start of the current time window
+    let currentPage = 1; // Variable to track the current page in pagination
+    const RECORDINGS_PER_PAGE = 15; // The maximum number of recordings that can be displayed per page
+    const DEFAULT_WINDOW_DURATION = 30 * 60 * 1000; // Default time window duration set to 30 minutes
+    let currentWindowDuration = DEFAULT_WINDOW_DURATION; // Variable to store the current time window duration
+
+    // Function to update the label to reflect the current time window
+    function updateCurrentWindowLabel(direction) {
+        let windowTime = currentWindowDuration / (60 * 1000); // Convert milliseconds to minutes
+        let description = "Current Time Window (" + windowTime + " Minutes)";
+        if (direction > 0) {
+            description += " - " + (direction * windowTime) + " min ahead of search";
+        } else if (direction < 0) {
+            description += " - " + Math.abs(direction * windowTime) + " min behind search";
+        }
+        document.getElementById('currentWindow').innerText = description;
+    }
+
     // Fetch available dates based on recording files from /recordings endpoint
     function fetchAvailableDates(flatpickrInstance) {
         fetch('/recordings')
@@ -113,18 +120,9 @@
         });
 
         console.log('Parsed Dates:', Array.from(dates));
-
         // Convert the set of dates to an array of Date objects
         return Array.from(dates).map(dateStr => new Date(dateStr));
     }
-
-    let recordings = []; // Array to store recording information fetched from the server
-    let playerContainers = {}; // Object to store player instances for each recording
-    let currentWindowStart = new Date(); // Variable to track the start of the current time window
-    let currentPage = 1; // Variable to track the current page in pagination
-    const RECORDINGS_PER_PAGE = 15; // The maximum number of recordings that can be displayed per page
-    const DEFAULT_WINDOW_DURATION = 30 * 60 * 1000; // Default time window duration set to 30 minutes
-    let currentWindowDuration = DEFAULT_WINDOW_DURATION; // Variable to store the current time window duration
 
     // Function to add a recording's player container to the DOM
     function addRecording(name, date, time) {
@@ -177,27 +175,56 @@
     }
 
     // Function to filter recordings based on user search input and datetime
+
     function filterRecordings() {
         const searchTerm = document.getElementById('searchTerm').value.trim().toLowerCase();
         const datetimeValue = document.getElementById('datetimePicker').value;
+        // Attempt to parse the datetimePicker value
+        const parsedDate = new Date(datetimeValue.replace(' ', 'T'));
+        if (isNaN(parsedDate)) {
+            alert('Invalid date and time. Please select a valid date and time.');
+            return;
+        }
 
-        // Check for blank search term or missing datetime
-        if (!searchTerm || !datetimeValue) {
-            alert('Please enter a search term and select a date and time.');
+        // Check for blank search term
+        if (!searchTerm) {
+            alert('Please enter a search term.');
             return;
         }
         const searchTerms = searchTerm.split(' '); // Split input into an array of words
-        currentWindowStart = new Date(datetimeValue.replace(' ', 'T')); // Set the start of the current window
+        currentWindowStart = parsedDate; // Update the start of the current window
         currentPage = 1; // Reset to the first page
         navigateTimeWindow(0); // Filter the recordings for the initial window
     }
 
-    // Function to navigate to a different time window (previous or next)
     function navigateTimeWindow(direction) {
+        if (isNaN(currentWindowStart.getTime())) {
+            console.error('Invalid date detected. Resetting to current date.');
+            currentWindowStart = new Date(); // Reset to current date
+        }
+
         currentWindowStart = new Date(currentWindowStart.getTime() + direction * currentWindowDuration);
-        document.getElementById('datetimePicker')._flatpickr.setDate(currentWindowStart, true);
-document.getElementById('datetimePicker').value = currentWindowStart.toLocaleString('en-CA', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }).replace(',', '').replace(/\//g, '-')
-        updateCurrentWindowLabel(direction); // Update the time window label to reflect navigation
+
+        // Adjust the current window start time and format the date in local 24-hour time
+        const formattedDate = currentWindowStart.toLocaleString('en-CA', {
+            year: 'numeric',
+            month: '2-digit',
+            day: '2-digit',
+            hour: '2-digit',
+            minute: '2-digit',
+            hour12: false, // Ensures 24-hour format
+        }).replace(',', '').replace(/\//g, '-');
+
+        // Update Flatpickr with the new date
+        if (document.getElementById('datetimePicker')._flatpickr) {
+            document.getElementById('datetimePicker')._flatpickr.setDate(currentWindowStart, true);
+        }
+
+        // Update the datetimePicker input field
+        document.getElementById('datetimePicker').value = formattedDate;
+
+        // Update the time window label and fetch recordings
+        updateCurrentWindowLabel(direction);
         fetchAndDisplayRecordings();
     }
 
