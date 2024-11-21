@@ -85,6 +85,7 @@
             .then(response => response.text()) // Assuming /recordings returns a list of files in plain text
             .then(responseText => {
                 const availableDates = parseRecordingDates(responseText);
+                console.log('Highlighting these dates in Flatpickr:', availableDates);
                 flatpickrInstance.set('enable', availableDates);
             })
             .catch(error => console.error('Error fetching available dates:', error));
@@ -96,16 +97,22 @@
         const dates = new Set();
 
         // Regular expression to match lines containing .mp4 files with date in the filename
-        const regex = /<a href="([^.]+-[^.]+-(\d{8})-\d{6}\.mp4)">.*?<\/a>/;
+        const regex = /<a href=".*?-(\d{8})-\d{6}\.mp4">/;
 
         lines.forEach(line => {
             const match = line.match(regex);
             if (match) {
-                const dateStr = match[2]; // Extract the date part (YYYYMMDD)
-                const formattedDate = `${dateStr.substring(0, 4)}-${dateStr.substring(4, 6)}-${dateStr.substring(6, 8)}`;
-                dates.add(formattedDate); // Add the date to the set
+                const dateStr = match[1]; // Extract the date (YYYYMMDD)
+                const year = parseInt(dateStr.substring(0, 4), 10);
+                const month = parseInt(dateStr.substring(4, 6), 10) - 1; // Month is 0-indexed
+                const day = parseInt(dateStr.substring(6, 8), 10);
+
+                // Create a local Date object
+                dates.add(new Date(year, month, day));
             }
         });
+
+        console.log('Parsed Dates:', Array.from(dates));
 
         // Convert the set of dates to an array of Date objects
         return Array.from(dates).map(dateStr => new Date(dateStr));
