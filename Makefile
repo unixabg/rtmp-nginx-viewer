@@ -19,6 +19,7 @@ install:
 	install -m 644 cameras.conf $(NGINX_CONF_DIR)/
 	install -m 644 index.html $(WEB_ROOT)/index.html
 	install -m 644 history.html $(WEB_ROOT)/history.html
+	install -m 644 live.html $(WEB_ROOT)/live.html
 	install -m 644 style.css $(WEB_ROOT)/style.css
 
 	# Reload Nginx if installed and active
@@ -32,6 +33,7 @@ upgrade:
 	@echo "Upgrading components: index.html, history.html, and version.txt to /var/www/html/"
 	install -m 644 index.html /var/www/html/
 	install -m 644 history.html /var/www/html/
+	install -m 644 live.html /var/www/html/
 	install -m 644 version.txt /var/www/html/
 	@echo "Upgrade complete."
 
@@ -47,6 +49,7 @@ uninstall:
 	# Remove style.css and history.html that were added by install
 	rm -f $(WEB_ROOT)/style.css
 	rm -f $(WEB_ROOT)/history.html
+	rm -f $(WEB_ROOT)/live.html
 
 	# Reload Nginx if installed and active
 	if systemctl is-active --quiet nginx; then \
