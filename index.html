@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Welcome</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div id="welcomeContainer">
+        <div id="welcomeMessage">
+            <p>Welcome to RTMP Viewer</p>
+        </div>
+    </div>
+    <div id="navigation" style="text-align: center; margin-top: 30px;">
+        <a href="live.html" class="nav-link" style="display: inline-block; margin: 10px;">Live Feeds</a>
+        <a href="history.html" class="nav-link" style="display: inline-block; margin: 10px;">History</a>
+    </div>
+    <footer style="text-align: center; margin-top: 50px; font-size: 0.8rem;">
+        <p>
+            Powered by RTMP Viewer | 
+            <a href="https://github.com/unixabg/rtmp-nginx-viewer" target="_blank" style="text-decoration: none; color: inherit;">GitHub</a>
+        </p>
+        <div id="versionInfo" style="margin-top: 10px; font-style: italic;">Loading version...</div>
+    </footer>
+
+    <script>
+        // Fetch and display version information
+        fetch('/version.txt')
+            .then(response => response.text())
+            .then(version => {
+                document.getElementById('versionInfo').innerText = `Version: ${version.trim()}`;
+            })
+            .catch(error => {
+                console.error('Error fetching version:', error);
+                document.getElementById('versionInfo').innerText = 'Version: Not available';
+            });
+    </script>
+</body>
+</html>
+
