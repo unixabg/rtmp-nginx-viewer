@@ -13,7 +13,7 @@
         <p>Welcome! Please query your live camera group.</p>
         <div id="versionInfo" style="text-align: center; margin: 10px 0; font-size: 0.6em;"></div>
         <script>
-            fetch('/version.txt')
+        fetch(`/version.txt?timestamp=${new Date().getTime()}`)
                 .then(response => response.text())
                 .then(version => {
                     document.getElementById('versionInfo').innerText = `${version.trim()}`;
