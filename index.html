@@ -29,14 +29,49 @@
         <button id="resetButton" onclick="window.location.reload()" style="display: none;">Reset</button>
     </div>
 </div>
+<div id="paginationControls" style="display: none;">
+    <button id="previousPage" onclick="navigatePage(-1)">Previous Page</button>
+    <span id="currentPage">Page 1 of 1</span>
+    <button id="nextPage" onclick="navigatePage(1)">Next Page</button>
+</div>
 <br>
 <br>
 <br>
 <div class="player-wrapper" id="wrapper"></div>
 
 <script>
+    let allCameras = []; // Array to store the full list of cameras
     let cameras = [];
     let playerContainers = {}; // Tracks player instances by their container ID
+    let currentPage = 1; // Variable to track the current page in pagination
+    const CAMERAS_PER_PAGE = 15; // Number of cameras to display per page
+
+    // Function to display the cameras for the current page
+    function displayCameras() {
+        const startIndex = (currentPage - 1) * CAMERAS_PER_PAGE;
+        const endIndex = startIndex + CAMERAS_PER_PAGE;
+        const pageCameras = cameras.slice(startIndex, endIndex); // Get cameras for the current page
+
+        cleanupPlayers(); // Clean up existing players before displaying new ones
+        pageCameras.forEach(camera => {
+            addCamera(camera); // Prepare the container and overlay
+            startPlayer(camera); // Start the player for the camera
+        });
+
+        // Update pagination controls
+        document.getElementById('paginationControls').style.display = cameras.length > CAMERAS_PER_PAGE ? 'block' : 'none';
+        document.getElementById('currentPage').innerText = `Page ${currentPage} of ${Math.ceil(cameras.length / CAMERAS_PER_PAGE)}`;
+    }
+
+    // Function to navigate between pages
+    function navigatePage(direction) {
+        const totalPages = Math.ceil(cameras.length / CAMERAS_PER_PAGE);
+        if ((direction === -1 && currentPage > 1) || (direction === 1 && currentPage < totalPages)) {
+            currentPage += direction;
+            displayCameras();
+        }
+    }
+
 
     function addCamera(name) {
         let wrapper = document.getElementById('wrapper');
@@ -91,41 +126,30 @@
         playerContainers = {};
     }
 
+    // Function to filter cameras based on search input
     function filterCameras() {
         const searchTerm = document.getElementById('searchTerm').value.trim().toLowerCase();
 
-        // Check for blank search term
         if (!searchTerm) {
-            // Display invalid search popup (implementation depends on your preference)
             alert('Please enter a search term.');
-            return; // Exit the function without further processing
+            return;
         }
 
-        // If search term is not blank, continue with existing logic...
-        const searchTerms = searchTerm.split(' '); // Split input into an array of words
+        const searchTerms = searchTerm.split(' ');
+        cleanupPlayers(); // Clean up existing players before filtering
 
-        cleanupPlayers(); // Cleanup existing players before filtering
-
-        // Hide welcome message
         document.getElementById('welcomeMessage').style.display = 'none';
-
-        // Hide search button
         document.getElementById('searchButton').style.display = 'none';
+        document.getElementById('resetButton').style.display = 'inline';
 
-        // Make the "Reset Search" button visible
-        document.getElementById('resetButton').style.display = 'inline'; // Or 'block'
-
-        // Start with all cameras, then reduce the list by filtering with each term
-        let filteredCameras = cameras;
+        let filteredCameras = allCameras; // Always start filtering from the full list
         searchTerms.forEach(term => {
             filteredCameras = filteredCameras.filter(camera => camera.toLowerCase().includes(term));
         });
 
-        // Now, filteredCameras contains only cameras that match all search terms
-        filteredCameras.forEach(camera => {
-            addCamera(camera); // Prepare the container and overlay
-            startPlayer(camera); // Now start the player
-        });
+        cameras = filteredCameras.sort(); // Update the cameras array with filtered results
+        currentPage = 1; // Reset to the first page
+        displayCameras(); // Display the filtered cameras
     }
 
     function searchOnEnter(event) {
@@ -134,9 +158,10 @@
         }
     }
 
+    // Function to fetch and initialize cameras
     function fetchCameras() {
         console.log('Request active RTMP streams');
-        var xhr = new XMLHttpRequest();
+        const xhr = new XMLHttpRequest();
         xhr.open('GET', 'stat', true);
         xhr.responseType = 'document';
         xhr.onload = function () {
@@ -149,10 +174,11 @@
                     const el = camIter.iterateNext();
                     if (!el) break;
                     const name = el.textContent;
-                    cameras.push(name);
+                    allCameras.push(name); // Store in the full list
                 }
 
-                cameras.sort();
+                allCameras.sort(); // Sort the full list alphabetically
+                cameras = [...allCameras]; // Initialize the display list
                 // Cameras are now fetched and stored. Players are not created here.
             }
         };
