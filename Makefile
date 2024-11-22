@@ -17,10 +17,11 @@ install:
 	install -m 644 default $(SITES_AVAILABLE)/
 	ln -sfn $(SITES_AVAILABLE)/default $(SITES_ENABLED)/default
 	install -m 644 cameras.conf $(NGINX_CONF_DIR)/
-	install -m 644 index.html $(WEB_ROOT)/index.html
-	install -m 644 history.html $(WEB_ROOT)/history.html
-	install -m 644 live.html $(WEB_ROOT)/live.html
-	install -m 644 style.css $(WEB_ROOT)/style.css
+	install -m 644 history.html $(WEB_ROOT)/
+	install -m 644 index.html $(WEB_ROOT)/
+	install -m 644 live.html $(WEB_ROOT)/
+	install -m 644 style.css $(WEB_ROOT)/
+	install -m 644 version.txt $(WEB_ROOT)/
 
 	# Reload Nginx if installed and active
 	if systemctl is-active --quiet nginx; then \
@@ -31,10 +32,11 @@ install:
 
 upgrade:
 	@echo "Upgrading components: index.html, history.html, and version.txt to /var/www/html/"
-	install -m 644 index.html /var/www/html/
-	install -m 644 history.html /var/www/html/
-	install -m 644 live.html /var/www/html/
-	install -m 644 version.txt /var/www/html/
+	install -m 644 history.html $(WEB_ROOT)/
+	install -m 644 index.html $(WEB_ROOT)/
+	install -m 644 live.html $(WEB_ROOT)/
+	install -m 644 style.css $(WEB_ROOT)/
+	install -m 644 version.txt $(WEB_ROOT)/
 	@echo "Upgrade complete."
 
 uninstall:
