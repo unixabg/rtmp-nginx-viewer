@@ -5,6 +5,25 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Welcome</title>
     <link rel="stylesheet" href="style.css">
+    <style>
+        /* Style for navigation */
+        #navigation {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            gap: 60px; /* Adds space between icons */
+        }
+
+        a.nav-link svg {
+            width: 48px; /* Increased size of icons */
+            height: 48px;
+            transition: transform 0.2s ease-in-out;
+        }
+
+        a.nav-link:hover svg {
+            transform: scale(1.1); /* Slight zoom effect on hover */
+        }
+    </style>
 </head>
 <body>
     <div id="welcomeContainer">
@@ -12,9 +31,26 @@
             <p>Welcome to RTMP Viewer</p>
         </div>
     </div>
-    <div id="navigation" style="text-align: center; margin-top: 30px;">
-        <a href="live.html" class="nav-link" style="display: inline-block; margin: 10px;">Live Feeds</a>
-        <a href="history.html" class="nav-link" style="display: inline-block; margin: 10px;">History</a>
+    </br >
+    </br >
+    <div id="navigation">
+        <!-- Link to Live View -->
+        <a href="live.html" class="nav-link" title="Live View" aria-label="Live View">
+            <svg width="800px" height="800px" viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
+                <path fill="#3688FF" d="M51 22.001c16.016 0 28.999 12.983 28.999 28.999S67.016 79.999 51 79.999 22.001 67.016 22.001 51c0-16.015 12.983-28.999 28.999-28.999z"/>
+                <path fill="#2980BA" d="M53 77.999c-16.016 0-28.999-12.983-28.999-28.999a28.889 28.889 0 0 1 7.519-19.48c-5.847 5.305-9.519 12.964-9.519 21.48 0 16.016 12.983 28.999 28.999 28.999 8.518 0 16.176-3.672 21.48-9.519A28.887 28.887 0 0 1 53 77.999z"/>
+                <path fill="#35495E" d="M51 38.005c7.177 0 12.995 5.818 12.995 12.995S58.177 63.995 51 63.995 38.005 58.177 38.005 51 43.823 38.005 51 38.005z"/>
+                <path fill="#ffffff" d="M60.003 35.009c3.862 0 6.992 3.133 6.992 6.998s-3.13 6.998-6.992 6.998c-3.86 0-6.992-3.133-6.992-6.998s3.132-6.998 6.992-6.998z"/>
+                <path fill="#3688FF" d="M50 4c26.943 0 48.898 21.314 49.949 48 .025-.665.051-1.329.051-2 0-27.614-22.386-50-50-50S0 22.386 0 50c0 .671.024 1.335.051 2C1.102 25.314 23.057 4 50 4z"/>
+            </svg>
+        </a>
+        <!-- Link to History -->
+        <a href="history.html" class="nav-link" title="History View" aria-label="History View">
+            <svg viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" role="img">
+                <path d="M512 1024C229.7 1024 0 794.3 0 512S229.7 0 512 0s512 229.7 512 512-229.7 512-512 512z m0-938.7C276.7 85.3 85.3 276.7 85.3 512S276.7 938.7 512 938.7 938.7 747.3 938.7 512 747.3 85.3 512 85.3z" fill="#3688FF" />
+                <path d="M640 682.7c-9.6 0-19.3-3.2-27.3-9.9l-128-106.7c-9.7-8.1-15.4-20.1-15.4-32.8V384c0-23.6 19.1-42.7 42.7-42.7s42.7 19.1 42.7 42.7v129.4l112.6 93.9c18.1 15.1 20.5 42 5.5 60.1-8.5 10-20.6 15.3-32.8 15.3z" fill="#5F6379" />
+            </svg>
+        </a>
     </div>
     <footer style="text-align: center; margin-top: 50px; font-size: 0.8rem;">
         <p>
@@ -38,4 +74,5 @@
     </script>
 </body>
 </html>
+
 
