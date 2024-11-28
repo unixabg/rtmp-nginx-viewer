@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Write our pid file for logrotate signal
+# Write our PID file for logrotate signal
 echo $$ > /var/run/rtsp-to-rtmp.pid
 
 CONFIG_FILE="/etc/rtsp-to-rtmp/cameras"
@@ -9,14 +9,27 @@ declare -a CHILD_PIDS
 declare -a FIFO_PATHS
 SCRIPT_LOG="/var/log/rtsp-to-rtmp/script_log"
 
+# Unremark the below for more debugging
+#exec >> "$SCRIPT_LOG" 2>&1  # Redirect all output to the script log
+#set -x  # Enable debug output
+
 # Function to handle script termination gracefully
 cleanup() {
     echo "$(date) - Starting cleanup process..." >> "$SCRIPT_LOG"
-    # Kill all child processes associated with FFmpeg and FIFO handling
     for PID in "${CHILD_PIDS[@]}"; do
-        echo "$(date) - Terminating process PID: $PID" >> "$SCRIPT_LOG"
-        kill -SIGTERM "$PID" 2>/dev/null
+        if ps -p "$PID" > /dev/null; then
+            echo "$(date) - Terminating process PID: $PID" >> "$SCRIPT_LOG"
+            kill -SIGTERM "$PID" 2>/dev/null
+            sleep 1
+            if ps -p "$PID" > /dev/null; then
+                echo "$(date) - Force-killing process PID: $PID" >> "$SCRIPT_LOG"
+                kill -SIGKILL "$PID" 2>/dev/null
+            fi
+        else
+            echo "$(date) - Process PID: $PID not found, skipping..." >> "$SCRIPT_LOG"
+        fi
     done
+
     # Remove FIFOs
     for FIFO in "${FIFO_PATHS[@]}"; do
         if [[ -p "$FIFO" ]]; then
@@ -48,39 +61,61 @@ while IFS=' ' read -r CAMERA_NAME RTSP_URL; do
     LOG_FILE="/var/log/rtsp-to-rtmp/${CAMERA_NAME}.log"
     FIFO_PATHS+=("$FIFO_PATH")
 
-    # Create FIFO if it does not exist
-    [[ ! -p "$FIFO_PATH" ]] && mkfifo "$FIFO_PATH"
-
-    # Start a background process to redirect FIFO output to the log file
-    (
-        exec 3>>"$LOG_FILE"
-        while read line; do
-            echo "$line" >&3
-        done < "$FIFO_PATH"
-    ) &
-    CHILD_PIDS+=("$!")
-
-    # Launch FFmpeg using the FIFO for logging
+    # Retry loop for FFmpeg
     (
         RETRY_DELAY=5
         MAX_RETRY_DELAY=60
         while true; do
-            echo "$(date) - Starting FFmpeg for ${CAMERA_NAME}" >> "$LOG_FILE"
-            ffmpeg -timeout 5000000 -i "$RTSP_URL" -acodec copy -vcodec copy -f flv "${RTMP_SERVER_URL}/${CAMERA_NAME}" > "$FIFO_PATH" 2>&1
-            EXIT_STATUS=$?
-            if [ $EXIT_STATUS -eq 0 ]; then
-                echo "$(date) - FFmpeg exited normally for ${CAMERA_NAME}, restarting in $RETRY_DELAY seconds..." >> "$LOG_FILE"
-                sleep $RETRY_DELAY
-            else
-                echo "$(date) - FFmpeg died unexpectedly for ${CAMERA_NAME}, restarting in $RETRY_DELAY seconds..." >> "$LOG_FILE"
-                sleep $RETRY_DELAY
+            # Start FIFO reader process
+            if [[ ! -p "$FIFO_PATH" ]]; then
+                echo "$(date) - FIFO ${FIFO_PATH} missing, creating..." >> "$LOG_FILE"
+                mkfifo "$FIFO_PATH"
             fi
-            [ $RETRY_DELAY -lt $MAX_RETRY_DELAY ] && RETRY_DELAY=$((RETRY_DELAY * 2))
+            # Start FIFO reader
+            (
+                exec 3>>"$LOG_FILE"
+                while read line; do
+                    echo "$line" >&3
+                done < "$FIFO_PATH"
+            ) &
+            FIFO_READER_PID="$!"
+            CHILD_PIDS+=("$FIFO_READER_PID")  # Track FIFO reader process for cleanup
+            echo "$(date) - Started FIFO reader with PID: $FIFO_READER_PID" >> "$LOG_FILE"
+
+            echo "$(date) - Starting FFmpeg for ${CAMERA_NAME}" >> "$LOG_FILE"
+            ffmpeg -timeout 5000000 -i "$RTSP_URL" -acodec copy -vcodec copy -f flv "${RTMP_SERVER_URL}/${CAMERA_NAME}" \
+                > "$FIFO_PATH" 2>&1
+            EXIT_STATUS=$?
+
+            echo "$(date) - FFmpeg exited with status $EXIT_STATUS for ${CAMERA_NAME}" >> "$LOG_FILE"
+
+            # Kill the FIFO reader process
+            echo "$(date) - Terminating FIFO reader process PID: $FIFO_READER_PID" >> "$LOG_FILE"
+            kill -SIGTERM "$FIFO_READER_PID" 2>/dev/null
+            sleep 1
+            if ps -p "$FIFO_READER_PID" > /dev/null; then
+                echo "$(date) - Force-killing FIFO reader process PID: $FIFO_READER_PID" >> "$LOG_FILE"
+                kill -SIGKILL "$FIFO_READER_PID" 2>/dev/null
+            fi
+
+            # Remove and recreate the FIFO
+            if [[ -p "$FIFO_PATH" ]]; then
+                echo "$(date) - Removing stale FIFO: $FIFO_PATH" >> "$LOG_FILE"
+                rm -f "$FIFO_PATH"
+            fi
+
+            # Adjust retry delay and restart FFmpeg
+            if [ $EXIT_STATUS -eq 0 ]; then
+                echo "$(date) - FFmpeg exited normally, restarting in $RETRY_DELAY seconds..." >> "$LOG_FILE"
+            else
+                echo "$(date) - FFmpeg crashed, restarting in $RETRY_DELAY seconds..." >> "$LOG_FILE"
+            fi
+            sleep $RETRY_DELAY
+            RETRY_DELAY=$((RETRY_DELAY * 2))
             [ $RETRY_DELAY -gt $MAX_RETRY_DELAY ] && RETRY_DELAY=$MAX_RETRY_DELAY
         done
     ) &
-    CHILD_PIDS+=("$!")
+    CHILD_PIDS+=("$!")  # Track FFmpeg retry loop process for cleanup
 done < "$CONFIG_FILE"
 
 wait
-
