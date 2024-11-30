@@ -1,23 +1,22 @@
 .PHONY: install uninstall purge upgrade
 
 install:
-	# Ensure /opt and /etc/rtsp-to-rtmp directories exist
-	mkdir -p /etc/rtsp-to-rtmp
-	mkdir -p /opt
-	mkdir -p /var/log/rtsp-to-rtmp
+	# Ensure necessary directories exist with appropriate permissions
+	install -d -m 755 /etc/rtsp-to-rtmp
+	install -d -m 755 /opt
+	install -d -m 755 /var/log/rtsp-to-rtmp
 
-	# Copy rtsp-to-rtmp.sh to /opt
-	cp rtsp-to-rtmp.sh /opt/rtsp-to-rtmp
-	chmod +x /opt/rtsp-to-rtmp
+	# Install the main script
+	install -m 755 rtsp-to-rtmp.sh /opt/rtsp-to-rtmp
 
 	# Install logrotate configuration
-	cp rtsp-to-rtmp.logrotate /etc/logrotate.d/rtsp-to-rtmp
+	install -m 644 rtsp-to-rtmp.logrotate /etc/logrotate.d/rtsp-to-rtmp
 
-	# Copy cameras.conf to /etc/rtsp-to-rtmp
-	cp rtsp-to-rtmp.cameras /etc/rtsp-to-rtmp/cameras
+	# Install cameras configuration file
+	install -m 644 rtsp-to-rtmp.cameras /etc/rtsp-to-rtmp/cameras
 
-	# Remove the systemd service file
-	cp rtsp-to-rtmp.service /etc/systemd/system/rtsp-to-rtmp.service
+	# Install the systemd service file
+	install -m 644 rtsp-to-rtmp.service /etc/systemd/system/
 
 	# Reload systemd to apply changes
 	systemctl daemon-reload
