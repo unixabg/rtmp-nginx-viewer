@@ -22,11 +22,11 @@ install:
 	systemctl daemon-reload
 
 uninstall:
-# Stop the systemd service
-	systemctl stop rtsp-to-rtmp.service
+	# Stop the systemd service
+	systemctl stop rtsp-to-rtmp.service || true
 
 	# Disable the systemd service to not start on boot
-	systemctl disable rtsp-to-rtmp.service
+	systemctl disable rtsp-to-rtmp.service || true
 
 	# Remove the systemd service file
 	rm -f /etc/systemd/system/rtsp-to-rtmp.service
@@ -37,11 +37,13 @@ uninstall:
 	# Remove the main script
 	rm -f /opt/rtsp-to-rtmp
 
-	# Optionally remove the logrotate configuration
-	# Comment out the next line if you prefer to keep the logrotate config on uninstall
+	# Remove the logrotate configuration
 	rm -f /etc/logrotate.d/rtsp-to-rtmp
 
-	# Note: This target does not remove the configuration directory or log files
+	# Notify the user about logs
+	@echo "Log files in /var/log/rtsp-to-rtmp/ are not removed. Please delete them manually if needed."
+	# Notify the user about configs
+	@echo "Configuration files in /etc/rtsp-to-rtmp/ are not removed. Please delete them manually if needed."
 
 purge:
 	# Call uninstall target
@@ -57,5 +59,9 @@ upgrade:
 	# Install the latest version of the script while preserving permissions
 	install -m 755 rtsp-to-rtmp.sh /opt/rtsp-to-rtmp
 
+	# Reload systemd to apply changes
+	systemctl daemon-reload
+
 	# Restart the service to use the upgraded script
 	systemctl restart rtsp-to-rtmp.service
+
