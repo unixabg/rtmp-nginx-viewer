@@ -1,4 +1,4 @@
-.PHONY: install uninstall purge
+.PHONY: install uninstall purge upgrade
 
 install:
 	# Ensure /opt and /etc/rtsp-to-rtmp directories exist
@@ -53,3 +53,10 @@ purge:
 
 	# Remove all related log files
 	rm -rf /var/log/rtsp-to-rtmp
+
+upgrade:
+	# Install the latest version of the script while preserving permissions
+	install -m 755 rtsp-to-rtmp.sh /opt/rtsp-to-rtmp
+
+	# Restart the service to use the upgraded script
+	systemctl restart rtsp-to-rtmp.service
