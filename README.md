@@ -36,7 +36,7 @@ Install the project:
 
 ```make install```
 
-Add your cameras to the /etc/nginx/cameras.conf and be mindful for the camera name to use something like MyCamName or My_Cam_Name. The reason for the naming conventions is that if you want the recordings feature in proper naming will break the regex call I am making in the code to present the videos. If you have a lot of cameras best to be overly descriptive like MyDrivewayWest222, this will help provide a granular search and not overwhelm your browser.
+Add your cameras to the /etc/nginx/cameras.conf and be mindful for the camera name to use something like MyCamName or My_Cam_Name (* use only camel or snake naming *). The reason for the naming conventions is that if you want the recordings feature an improper naming will break the regex call I am making in the code to present the videos. If you have a lot of cameras best to be overly descriptive like MyDrivewayWest222, this will help provide a granular search and not overwhelm your browser.
 
 Restart nginx:
 
