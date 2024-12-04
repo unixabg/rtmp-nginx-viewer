@@ -59,6 +59,9 @@ upgrade:
 	# Install the latest version of the script while preserving permissions
 	install -m 755 rtsp-to-rtmp.sh /opt/rtsp-to-rtmp
 
+	# Install the latest logrotate configuration
+	install -m 644 rtsp-to-rtmp.logrotate /etc/logrotate.d/rtsp-to-rtmp
+
 	# Reload systemd to apply changes
 	systemctl daemon-reload
 
