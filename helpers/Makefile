@@ -66,5 +66,7 @@ upgrade:
 	systemctl daemon-reload
 
 	# Restart the service to use the upgraded script
-	systemctl restart rtsp-to-rtmp.service
+	systemctl stop rtsp-to-rtmp.service
+	sleep 5
+	systemctl start rtsp-to-rtmp.service
 
