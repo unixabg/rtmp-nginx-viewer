@@ -5,9 +5,7 @@
     delaycompress
     missingok
     notifempty
+    copytruncate
     create 0644 root adm
     sharedscripts
-    postrotate
-        /usr/bin/kill -USR1 $(cat /var/run/rtsp-to-rtmp.pid)
-    endscript
 }
