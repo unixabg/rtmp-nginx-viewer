@@ -33,13 +33,7 @@ cleanup() {
     exit 0
 }
 
-# Function to handle log rotation
-rotate_logs() {
-    echo "$(date) - Rotating logs" >> "$SCRIPT_LOG"
-}
-
 trap cleanup SIGINT SIGTERM
-trap rotate_logs USR1
 
 while IFS=' ' read -r CAMERA_NAME RTSP_URL; do
     [[ -z "$CAMERA_NAME" || -z "$RTSP_URL" || "$CAMERA_NAME" =~ ^# ]] && continue
