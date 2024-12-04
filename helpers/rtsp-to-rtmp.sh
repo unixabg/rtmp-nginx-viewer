@@ -6,7 +6,7 @@ echo $$ > /var/run/rtsp-to-rtmp.pid
 CONFIG_FILE="/etc/rtsp-to-rtmp/cameras"
 RTMP_SERVER_URL="rtmp://localhost/cam"
 declare -a CHILD_PIDS
-SCRIPT_LOG="/var/log/rtsp-to-rtmp/script_log"
+SCRIPT_LOG="/var/log/rtsp-to-rtmp/script.log"
 
 # Unremark the below for more debugging
 #exec >> "$SCRIPT_LOG" 2>&1  # Redirect all output to the script log
