@@ -128,7 +128,7 @@
     }
 
     // Function to add a recording's player container to the DOM
-    function addRecording(name, date, time) {
+    function addRecording(name, date, time, fullName) {
         let wrapper = document.getElementById('wrapper');
         let container = document.createElement('div');
         container.className = 'camera-container';
@@ -139,7 +139,14 @@
 
         let overlay = document.createElement('div');
         overlay.className = 'camera-overlay';
-        overlay.innerText = name + ' - ' + date + ' ' + time; // Set the camera name, date, and time as the text
+        overlay.innerHTML = `
+            <span>${name} - ${date} ${time}</span>
+            <a href="/recordings/${fullName}.mp4"
+               download="${name}-${date}-${time}.mp4"
+               style="color: white; text-decoration: underline; margin-left: 10px;">
+               Download Video
+            </a>
+        `;
 
         container.appendChild(playerDiv);
         container.appendChild(overlay);
@@ -148,19 +155,31 @@
 
     // Function to initialize and start the player for a given recording
     function startPlayer(name, date, time, fullName) {
-        const playerDivId = 'player-' + name + '-' + date + '-' + time;
-        if (!playerContainers[playerDivId]) { // Check if player was already created
-            const player = OvenPlayer.create(playerDivId, {
-                autoStart: false,
-                controls: true,
-                sources: [{
-                    "file": `recordings/${fullName}.mp4`,
-                    "label": "mp4",
-                    "type": "mp4"
-                }],
-            });
-            playerContainers[playerDivId] = player; // Track the player instance
-        }
+      const playerDivId = 'player-' + name + '-' + date + '-' + time;
+      if (!playerContainers[playerDivId]) {
+        const player = OvenPlayer.create(playerDivId, {
+          autoStart: false,
+          controls: {
+            autoHide: true,
+            autoHideTimeout: 3000 // Hide the toolbar after 3 seconds of inactivity
+          },
+          skin: {},
+          sources: [{
+            "file": `recordings/${fullName}.mp4`,
+            "label": "mp4",
+            "type": "mp4"
+          }],
+        });
+        player.on('stateChanged', function (data) {
+          if (data.newstate === 'paused') {
+            console.log('Playback is paused. Setting player state to idle.');
+            player.stop(); // or player.unload();
+          }
+          console.table(data);
+          console.log('Player state changed:', data);
+        });
+        playerContainers[playerDivId] = player;
+      }
     }
 
     // Function to remove all player instances from the DOM and reset the playerContainers object
@@ -267,7 +286,7 @@
 
         cleanupPlayers(); // Clean up existing players before displaying new ones
         pageRecordings.forEach(recording => {
-            addRecording(recording.name, recording.date, recording.time); // Add the recording to the DOM
+            addRecording(recording.name, recording.date, recording.time, recording.fullName); // Add the recording to the DOM
             startPlayer(recording.name, recording.date, recording.time, recording.fullName); // Start the player for the recording
         });
 

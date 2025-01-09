@@ -44,12 +44,30 @@ body {
     bottom: 0;
     left: 0;
     width: 100%;
-    background-color: rgba(0, 0, 0, 0.5);
+    background-color: rgba(0, 0, 0, 0.7); /* Slightly darker for better readability */
     color: white;
     text-align: center;
-    padding: 5px;
+    padding: 5px 10px;
     box-sizing: border-box;
-    z-index: 1; /* Make sure it's above the player */
+    z-index: 1; /* Ensure it stays above the player */
+    display: flex;
+    justify-content: space-between; /* Adjust layout */
+    align-items: center;
+    pointer-events: auto; /* Enable interactions with overlay content */
+}
+.camera-preview {
+    position: relative;
+    z-index: 1; /* Keep player below the overlay */
+}
+.camera-overlay a {
+    color: #ffcc00; /* Highlight link in yellow for visibility */
+    text-decoration: none; /* Remove underline */
+    font-weight: bold;
+    margin-left: 10px; /* Space from other text */
+}
+.camera-overlay a:hover {
+    color: #fff; /* White on hover for a clear effect */
+    text-decoration: underline; /* Add underline on hover */
 }
 
 /* Search Wrapper Styling */
