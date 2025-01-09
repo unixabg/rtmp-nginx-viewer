@@ -1,1 +1,1 @@
-rtmp-nginx-viewer 1.0.3
+rtmp-nginx-viewer 1.0.4-next
