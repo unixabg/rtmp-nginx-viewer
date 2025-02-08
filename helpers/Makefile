@@ -18,8 +18,9 @@ install:
 	# Install the systemd service file
 	install -m 644 rtsp-to-rtmp.service /etc/systemd/system/
 
-	# Reload systemd to apply changes
+	# Reload systemd to apply changes and enable service
 	systemctl daemon-reload
+	systemctl enable rtsp-to-rtmp.service
 
 uninstall:
 	# Stop the systemd service
