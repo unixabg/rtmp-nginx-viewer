@@ -5,7 +5,20 @@ If you are looking for a lightweight way to offer a presentation for your RTMP a
 
 Recording for more of a nvr type setup is also possible. Largest deployment is 230+ cameras running Debian with the following hardware specifications:
 
-** Note: Hardware specifications will vary based on each setup. **
+> [!NOTE]
+> Hardware specifications will vary based on each setup.
+
+
+> [!NOTE]
+> The addition of the 8TB ssd is for recording four days of history on
+> the cameras. This system has cameras from four locations. Enabling the
+> recording does put extra work on the single worker process. To address any
+> potential bottleneck issues I took the liberty to put each of the four
+> locations in an isolated container using
+> https://tracker.debian.org/pkg/open-infrastructure-compute-tools with a bind
+> to each container for storage. I have seen no performance issues with this
+> configuration.
+
 
 Intel(R) Core(TM) i7-4770 CPU @ 3.40GHz.
 
@@ -13,7 +26,7 @@ Intel(R) Core(TM) i7-4770 CPU @ 3.40GHz.
 
 2TB ssd
 
-
+8TB ssd
 
 ### General Install Instructions (Debian)
 Become root user:
