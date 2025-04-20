@@ -19,6 +19,7 @@ install:
 	install -m 644 cameras.conf $(NGINX_CONF_DIR)/
 	install -m 644 history.html $(WEB_ROOT)/
 	install -m 644 index.html $(WEB_ROOT)/
+	install -m 644 kiosk.html $(WEB_ROOT)/
 	install -m 644 live.html $(WEB_ROOT)/
 	install -m 644 style.css $(WEB_ROOT)/
 	install -m 644 version.txt $(WEB_ROOT)/
@@ -34,6 +35,7 @@ upgrade:
 	@echo "Upgrading components: index.html, history.html, and version.txt to /var/www/html/"
 	install -m 644 history.html $(WEB_ROOT)/
 	install -m 644 index.html $(WEB_ROOT)/
+	install -m 644 kiosk.html $(WEB_ROOT)/
 	install -m 644 live.html $(WEB_ROOT)/
 	install -m 644 style.css $(WEB_ROOT)/
 	install -m 644 version.txt $(WEB_ROOT)/
@@ -51,6 +53,7 @@ uninstall:
 	# Remove style.css and history.html that were added by install
 	rm -f $(WEB_ROOT)/style.css
 	rm -f $(WEB_ROOT)/history.html
+	rm -f $(WEB_ROOT)/kiosk.html
 	rm -f $(WEB_ROOT)/live.html
 
 	# Reload Nginx if installed and active

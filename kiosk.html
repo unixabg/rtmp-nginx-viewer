@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Kiosk Mode</title>
+    <script src="//cdn.jsdelivr.net/npm/hls.js@latest/dist/hls.min.js"></script>
+    <script src="//cdn.jsdelivr.net/npm/ovenplayer/dist/ovenplayer.js"></script>
+    <link rel="stylesheet" href="style.css">
+    <style>
+        html, body {
+            margin: 0;
+            padding: 0;
+            height: 100%;
+            width: 100%;
+            overflow: hidden;
+            background-color: black;
+        }
+
+        #wrapper {
+            display: grid;
+            height: 100%;
+            width: 100%;
+            box-sizing: border-box;
+        }
+
+        .camera-container {
+            position: relative;
+            width: 100%;
+            height: 100%;
+            background: black;
+        }
+
+        .camera-preview {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            object-fit: cover; /* Video fits nicely */
+        }
+
+        .camera-overlay {
+            position: absolute;
+            bottom: 0;
+            left: 0;
+            width: 100%;
+            background-color: rgba(0, 0, 0, 0.6);
+            color: white;
+            text-align: center;
+            padding: 5px 0;
+            font-size: 1.2rem;
+            pointer-events: none;
+        }
+    </style>
+</head>
+<body>
+
+<div id="wrapper" class="player-wrapper"></div>
+
+<script>
+    const urlParams = new URLSearchParams(window.location.search);
+    const camsParam = urlParams.get('cams');
+    const REFRESH_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
+
+    let cameras = [];
+    let playerContainers = {};
+
+    if (camsParam) {
+        cameras = camsParam.split(',').map(cam => cam.trim()).filter(cam => cam.length > 0);
+    }
+
+    function loadCameras() {
+        const wrapper = document.getElementById('wrapper');
+        wrapper.innerHTML = ''; // Clear previous
+
+        cameras.forEach(name => {
+            const container = document.createElement('div');
+            container.className = 'camera-container';
+
+            const playerDiv = document.createElement('div');
+            playerDiv.className = 'camera-preview';
+            playerDiv.id = `player-${name}`;
+
+            const overlay = document.createElement('div');
+            overlay.className = 'camera-overlay';
+            overlay.innerText = name; // Show camera name overlay
+
+            container.appendChild(playerDiv);
+            container.appendChild(overlay);
+            wrapper.appendChild(container);
+
+            const player = OvenPlayer.create(playerDiv.id, {
+                autoStart: true,
+                mute: true,
+                controls: false,
+                sources: [{
+                    file: `hls/${name}.m3u8`,
+                    label: "hls",
+                    type: "hls"
+                }],
+            });
+
+            playerContainers[playerDiv.id] = player;
+        });
+
+        updateGridLayout(); // Setup the grid
+    }
+
+    function reloadCameras() {
+        Object.values(playerContainers).forEach(player => {
+            try { player.destroy(); } catch (e) { console.error('Error destroying player', e); }
+        });
+        playerContainers = {};
+        loadCameras();
+    }
+
+    function updateGridLayout() {
+        const wrapper = document.getElementById('wrapper');
+        const camCount = cameras.length;
+
+        let rows = Math.floor(Math.sqrt(camCount));
+        let cols = Math.ceil(camCount / rows);
+
+        wrapper.style.gridTemplateRows = `repeat(${rows}, 1fr)`;
+        wrapper.style.gridTemplateColumns = `repeat(${cols}, 1fr)`;
+    }
+
+    if (cameras.length > 0) {
+        loadCameras();
+        setInterval(reloadCameras, REFRESH_INTERVAL_MS);
+    } else {
+        document.getElementById('wrapper').innerHTML = '<p style="text-align: center; margin-top: 50px;">No cameras specified. Please add ?cams=Cam1,Cam2 to the URL.</p>';
+    }
+
+    // Optional: Fullscreen on first click
+    document.addEventListener('DOMContentLoaded', () => {
+        document.body.addEventListener('click', () => {
+            document.documentElement.requestFullscreen().catch(err => {
+                console.warn('Fullscreen request failed', err);
+            });
+        }, { once: true }); // Only the first click
+    });
+
+</script>
+
+</body>
+</html>
+

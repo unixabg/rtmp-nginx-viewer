@@ -74,6 +74,14 @@ Restart nginx:
 
 ```systemctl restart nginx```
 
+### Kiosk Feature
+
+I have added a kiosk feature that utilizes the kiosk.html file for calling a given camera group to be displayed with something like:
+
+```kiosk.html?cams=Camera0,Camera31,Cam7&refresh=3```
+
+The above should compose the cameras in the specified order and in an automatic grid on the browser.
+
 ### Links
 https://jared.geek.nz/2023/11/streaming-rtmp-with-openwrt/
 
