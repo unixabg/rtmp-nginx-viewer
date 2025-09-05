@@ -37,7 +37,7 @@ install:
 upgrade:
 	# Install scripts
 	install -m 755 nginx-thumbs.sh /opt/nginx-thumbs
-	@echo "Upgrading components: index.html, history.html, and version.txt to /var/www/html/"
+	@echo "Upgrading components to /var/www/html and scripts in /opt"
 	install -m 644 style.css $(WEB_ROOT)/
 	install -m 644 camera-status.html $(WEB_ROOT)/
 	install -m 644 history.html $(WEB_ROOT)/
