@@ -1,0 +1,211 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>System – Camera Status</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <!-- Reuse your existing stylesheet -->
+  <link rel="stylesheet" href="style.css">
+  <style>
+    /* Minimal additions, namespaced to avoid collisions */
+    .sys-wrap { max-width: 1200px; margin: 0 auto; padding: 1rem; }
+    .sys-header { display:flex; align-items:baseline; gap:.75rem; margin-bottom: .75rem; }
+    .sys-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+      gap: .75rem;
+    }
+    .cam-card {
+      border: 2px solid transparent;
+      border-radius: .5rem;
+      padding: .5rem;
+      background: #f7f7f7;
+    }
+    .cam-card.stale { border-color: #d00; background: #fff2f2; }
+    .cam-title { font-weight: 600; font-size: .95rem; margin-bottom: .25rem; word-break: break-word; }
+    .cam-meta { font-size: .8rem; line-height: 1.2; opacity: .85; }
+    .cam-thumb {
+      display:block; width: 100%; height: 110px; object-fit: cover;
+      border-radius: .35rem; margin-bottom: .4rem; background: #ddd;
+    }
+    .sys-status { font-size:.85rem; opacity:.8; }
+    .pill { display:inline-block; padding:.15rem .4rem; border-radius:999px; font-size:.75rem; background:#eee; }
+    .pill.red { background:#d00; color:#fff; }
+    .sys-toolbar { display:flex; gap:.5rem; align-items:center; margin-left:auto; }
+    button.sys-btn { cursor:pointer; padding:.35rem .6rem; border-radius:.35rem; border:1px solid #ccc; background:#fff; }
+  </style>
+</head>
+<body>
+  <div class="sys-wrap">
+    <div class="sys-header">
+      <h1 style="margin:0;">Camera Status</h1>
+      <span id="serverTime" class="sys-status pill" title="Server time (from Date header)">…</span>
+      <span id="updatedAt" class="sys-status" style="margin-left:.25rem;">(loading…)</span>
+      <div class="sys-toolbar">
+        <button class="sys-btn" id="refreshBtn" title="Refresh now">Refresh</button>
+        <span class="sys-status" id="autoRefreshNote">Auto-refresh: 60s</span>
+      </div>
+    </div>
+
+    <div id="grid" class="sys-grid" aria-live="polite"></div>
+  </div>
+
+  <script>
+    const THUMB_DIR = '/thumbnails/';
+    const STALE_MS = 10 * 60 * 1000; // 10 minutes
+    const AUTO_REFRESH_MS = 60 * 1000; // 60 seconds
+
+    const els = {
+      grid: document.getElementById('grid'),
+      serverTime: document.getElementById('serverTime'),
+      updatedAt: document.getElementById('updatedAt'),
+      refreshBtn: document.getElementById('refreshBtn'),
+    };
+
+    function fmt(dt) {
+      // ISO-like but friendlier
+      const pad = n => String(n).padStart(2,'0');
+      return `${dt.getFullYear()}-${pad(dt.getMonth()+1)}-${pad(dt.getDate())} ` +
+             `${pad(dt.getHours())}:${pad(dt.getMinutes())}:${pad(dt.getSeconds())}`;
+    }
+
+    function rel(msDiff) {
+      const mins = Math.round(msDiff / 60000);
+      if (Math.abs(mins) < 1) return 'just now';
+      return mins >= 0 ? `${mins} min ago` : `in ${Math.abs(mins)} min`;
+    }
+
+    async function headJSON(url) {
+      const res = await fetch(url, { method: 'HEAD', cache: 'no-store' });
+      if (!res.ok) throw new Error(`HEAD ${url} failed: ${res.status}`);
+      return { headers: res.headers };
+    }
+
+    async function getServerNow() {
+      // Use the server's Date header so we compare on server time, not client time
+      const res = await fetch(THUMB_DIR, { method: 'GET', cache: 'no-store' });
+      if (!res.ok) throw new Error(`GET ${THUMB_DIR} failed: ${res.status}`);
+      const dateHdr = res.headers.get('date'); // GMT per RFC
+      const serverNow = dateHdr ? new Date(dateHdr) : new Date();
+      return { serverNow, text: await res.text() };
+    }
+
+    function parseListing(htmlOrText) {
+      // Try HTML autoindex first
+      let names = [];
+      try {
+        const doc = new DOMParser().parseFromString(htmlOrText, 'text/html');
+        const links = [...doc.querySelectorAll('a[href]')];
+        for (const a of links) {
+          const href = a.getAttribute('href');
+          if (!href) continue;
+          if (href === '../') continue;
+          if (/\.(jpe?g|png|gif|webp)$/i.test(href)) {
+            // Normalize: strip query/fragment and decode
+            const clean = decodeURIComponent(href.split('#')[0].split('?')[0]);
+            names.push(clean);
+          }
+        }
+        if (names.length) return Array.from(new Set(names)).sort((a,b)=>a.localeCompare(b, undefined, {numeric:true}));
+      } catch (e) {
+        // fall through to text parsing
+      }
+
+      // Fallback: plain-text like the sample provided
+      const lines = htmlOrText.split('\n');
+      for (const line of lines) {
+        const m = line.match(/(\S+\.(?:jpe?g|png|gif|webp))/i);
+        if (m) names.push(m[1]);
+      }
+      return Array.from(new Set(names)).sort((a,b)=>a.localeCompare(b, undefined, {numeric:true}));
+    }
+
+    async function load() {
+      els.grid.innerHTML = '';
+      try {
+        const { serverNow, text } = await getServerNow();
+        els.serverTime.textContent = `Server: ${fmt(serverNow)} UTC`;
+        els.serverTime.title = 'From HTTP Date header (UTC)';
+
+        const files = parseListing(text);
+        if (files.length === 0) {
+          els.grid.innerHTML = '<div class="cam-meta">No thumbnails found.</div>';
+          els.updatedAt.textContent = `Updated: ${fmt(new Date())}`;
+          return;
+        }
+
+        // Build cards with placeholders first (for snappy UI), then fill times
+        const cardMap = new Map();
+        const frag = document.createDocumentFragment();
+
+        for (const name of files) {
+          const card = document.createElement('div');
+          card.className = 'cam-card';
+          card.innerHTML = `
+            <a href="${THUMB_DIR}${encodeURIComponent(name)}" target="_blank" rel="noopener noreferrer">
+              <img class="cam-thumb" loading="lazy" alt="${name}"
+                   src="${THUMB_DIR}${encodeURIComponent(name)}?t=${Date.now()}">
+            </a>
+            <div class="cam-title">${name}</div>
+            <div class="cam-meta">
+              <div>Age: <span class="age">…</span></div>
+              <div>Last-Modified: <span class="lm">…</span></div>
+            </div>
+          `;
+          cardMap.set(name, card);
+          frag.appendChild(card);
+        }
+        els.grid.appendChild(frag);
+
+        // Fetch Last-Modified for each file via HEAD (server authoritative time)
+        await Promise.all(files.map(async (name) => {
+          try {
+            const url = `${THUMB_DIR}${encodeURIComponent(name)}?head=${Date.now()}`;
+            const { headers } = await headJSON(url);
+            const lm = headers.get('last-modified'); // GMT
+            const lastMod = lm ? new Date(lm) : null;
+
+            const card = cardMap.get(name);
+            const ageEl = card.querySelector('.age');
+            const lmEl  = card.querySelector('.lm');
+
+            if (lastMod) {
+              const ageMs = serverNow - lastMod;
+              ageEl.textContent = rel(ageMs);
+              lmEl.textContent = `${fmt(lastMod)} UTC`;
+              if (ageMs > STALE_MS) {
+                card.classList.add('stale');
+                // Optional: add a visible pill
+                const pill = document.createElement('span');
+                pill.className = 'pill red';
+                pill.textContent = 'STALE >10min';
+                card.querySelector('.cam-title').append(' ', pill);
+              }
+            } else {
+              ageEl.textContent = 'unknown';
+              lmEl.textContent = 'n/a';
+            }
+          } catch (e) {
+            const card = cardMap.get(name);
+            if (card) {
+              card.querySelector('.age').textContent = 'error';
+              card.querySelector('.lm').textContent = 'error';
+            }
+          }
+        }));
+
+        els.updatedAt.textContent = `Updated: ${fmt(new Date())}`;
+      } catch (err) {
+        els.grid.innerHTML = `<div class="cam-meta" style="color:#d00;">Error: ${err.message}</div>`;
+        els.updatedAt.textContent = `Failed at: ${fmt(new Date())}`;
+      }
+    }
+
+    // Hook up manual refresh + auto refresh
+    els.refreshBtn.addEventListener('click', () => load());
+    load();
+    setInterval(load, AUTO_REFRESH_MS);
+  </script>
+</body>
+</html>
+

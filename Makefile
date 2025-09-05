@@ -12,11 +12,14 @@ install:
 	[ -f $(NGINX_CONF_DIR)/cameras.conf ] && cp $(NGINX_CONF_DIR)/cameras.conf $(NGINX_CONF_DIR)/cameras.conf.backup || true
 	[ -f $(WEB_ROOT)/index.html ] && cp $(WEB_ROOT)/index.html $(WEB_ROOT)/index.html.backup || true
 
+	# Install scripts
+	install -m 755 nginx-thumbs.sh /opt/nginx-thumbs
 	# Copy new configurations and web content
 	install -m 644 nginx.conf $(NGINX_CONF_DIR)/
 	install -m 644 default $(SITES_AVAILABLE)/
 	ln -sfn $(SITES_AVAILABLE)/default $(SITES_ENABLED)/default
 	install -m 644 cameras.conf $(NGINX_CONF_DIR)/
+	install -m 644 camera-status.html $(WEB_ROOT)/
 	install -m 644 history.html $(WEB_ROOT)/
 	install -m 644 index.html $(WEB_ROOT)/
 	install -m 644 kiosk.html $(WEB_ROOT)/
@@ -32,12 +35,15 @@ install:
 	fi
 
 upgrade:
+	# Install scripts
+	install -m 755 nginx-thumbs.sh /opt/nginx-thumbs
 	@echo "Upgrading components: index.html, history.html, and version.txt to /var/www/html/"
+	install -m 644 style.css $(WEB_ROOT)/
+	install -m 644 camera-status.html $(WEB_ROOT)/
 	install -m 644 history.html $(WEB_ROOT)/
 	install -m 644 index.html $(WEB_ROOT)/
 	install -m 644 kiosk.html $(WEB_ROOT)/
 	install -m 644 live.html $(WEB_ROOT)/
-	install -m 644 style.css $(WEB_ROOT)/
 	install -m 644 version.txt $(WEB_ROOT)/
 	@echo "Upgrade complete."
 
@@ -50,11 +56,14 @@ uninstall:
 	# Restore original web content if backup exists
 	[ -f $(WEB_ROOT)/index.html.backup ] && mv $(WEB_ROOT)/index.html.backup $(WEB_ROOT)/index.html || true
 
-	# Remove style.css and history.html that were added by install
+	# Remove html items
 	rm -f $(WEB_ROOT)/style.css
+	rm -f $(WEB_ROOT)/camera-status.html
 	rm -f $(WEB_ROOT)/history.html
+	rm -f $(WEB_ROOT)/index.html
 	rm -f $(WEB_ROOT)/kiosk.html
 	rm -f $(WEB_ROOT)/live.html
+	rm -f $(WEB_ROOT)/version.txt
 
 	# Reload Nginx if installed and active
 	if systemctl is-active --quiet nginx; then \
@@ -69,4 +78,6 @@ purge: uninstall
 
 	# Remove additional files created by install, if any
 	rm -f $(NGINX_CONF_DIR)/cameras.conf
+	# Remove scripts
+	rm -f /opt/nginx-thumbs
 

@@ -68,6 +68,14 @@ server {
 		add_header Cache-Control no-cache;
 	}
 
+	location /thumbnails {
+		# Serve video fragments
+		alias /videos/thumbnails;
+		add_header Cache-Control no-cache;
+		autoindex on;
+		autoindex_localtime on;
+	}
+
 	#location /recordings {
 	#	# Serve video fragments
 	#	alias /videos/recordings;
