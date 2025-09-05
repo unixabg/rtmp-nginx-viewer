@@ -19,7 +19,7 @@ install:
 	install -m 644 default $(SITES_AVAILABLE)/
 	ln -sfn $(SITES_AVAILABLE)/default $(SITES_ENABLED)/default
 	install -m 644 cameras.conf $(NGINX_CONF_DIR)/
-	install -m 644 cameras-status.html $(WEB_ROOT)/
+	install -m 644 camera-status.html $(WEB_ROOT)/
 	install -m 644 history.html $(WEB_ROOT)/
 	install -m 644 index.html $(WEB_ROOT)/
 	install -m 644 kiosk.html $(WEB_ROOT)/
@@ -39,7 +39,7 @@ upgrade:
 	install -m 755 nginx-thumbs.sh /opt/nginx-thumbs
 	@echo "Upgrading components to /var/www/html and scripts in /opt"
 	install -m 644 style.css $(WEB_ROOT)/
-	install -m 644 cameras-status.html $(WEB_ROOT)/
+	install -m 644 camera-status.html $(WEB_ROOT)/
 	install -m 644 history.html $(WEB_ROOT)/
 	install -m 644 index.html $(WEB_ROOT)/
 	install -m 644 kiosk.html $(WEB_ROOT)/
@@ -58,7 +58,7 @@ uninstall:
 
 	# Remove html items
 	rm -f $(WEB_ROOT)/style.css
-	rm -f $(WEB_ROOT)/cameras-status.html
+	rm -f $(WEB_ROOT)/camera-status.html
 	rm -f $(WEB_ROOT)/history.html
 	rm -f $(WEB_ROOT)/index.html
 	rm -f $(WEB_ROOT)/kiosk.html
