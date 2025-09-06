@@ -5,6 +5,11 @@ NGINX_CONF_DIR=/etc/nginx
 SITES_AVAILABLE=$(NGINX_CONF_DIR)/sites-available
 SITES_ENABLED=$(NGINX_CONF_DIR)/sites-enabled
 
+# ----- Minimal pinned versions for local JS/CSS -----
+HLSJS_VER      ?= 1.5.8
+OVENPLAYER_VER ?= 0.10.19
+FLATPICKR_VER  ?= 4.6.13
+
 install:
 	# Backup existing configurations and web content if they exist
 	[ -f $(NGINX_CONF_DIR)/nginx.conf ] && cp $(NGINX_CONF_DIR)/nginx.conf $(NGINX_CONF_DIR)/nginx.conf.backup || true
@@ -14,6 +19,7 @@ install:
 
 	# Install scripts
 	install -m 755 nginx-thumbs.sh /opt/nginx-thumbs
+
 	# Copy new configurations and web content
 	install -m 644 nginx.conf $(NGINX_CONF_DIR)/
 	install -m 644 default $(SITES_AVAILABLE)/
@@ -26,6 +32,20 @@ install:
 	install -m 644 live.html $(WEB_ROOT)/
 	install -m 644 style.css $(WEB_ROOT)/
 	install -m 644 version.txt $(WEB_ROOT)/
+
+	# Minimal: fetch JS/CSS deps directly into WEB_ROOT
+	install -d $(WEB_ROOT)/vendor/hls $(WEB_ROOT)/vendor/ovenplayer $(WEB_ROOT)/vendor/flatpickr
+	curl -fsSL "https://cdn.jsdelivr.net/npm/hls.js@$(HLSJS_VER)/dist/hls.min.js" \
+		-o "$(WEB_ROOT)/vendor/hls/hls.min.js"
+	curl -fsSL "https://cdn.jsdelivr.net/npm/ovenplayer@$(OVENPLAYER_VER)/dist/ovenplayer.js" \
+		-o "$(WEB_ROOT)/vendor/ovenplayer/ovenplayer.js"
+	# Flatpickr: include unminified (to mirror <script src=\"https://cdn.jsdelivr.net/npm/flatpickr\">) and minified + CSS
+	curl -fsSL "https://cdn.jsdelivr.net/npm/flatpickr@$(FLATPICKR_VER)/dist/flatpickr.js" \
+		-o "$(WEB_ROOT)/vendor/flatpickr/flatpickr.js"
+	curl -fsSL "https://cdn.jsdelivr.net/npm/flatpickr@$(FLATPICKR_VER)/dist/flatpickr.min.js" \
+		-o "$(WEB_ROOT)/vendor/flatpickr/flatpickr.min.js"
+	curl -fsSL "https://cdn.jsdelivr.net/npm/flatpickr@$(FLATPICKR_VER)/dist/flatpickr.min.css" \
+		-o "$(WEB_ROOT)/vendor/flatpickr/flatpickr.min.css"
 
 	# Reload Nginx if installed and active
 	if systemctl is-active --quiet nginx; then \
@@ -45,6 +65,21 @@ upgrade:
 	install -m 644 kiosk.html $(WEB_ROOT)/
 	install -m 644 live.html $(WEB_ROOT)/
 	install -m 644 version.txt $(WEB_ROOT)/
+
+	# Minimal: refresh JS/CSS deps directly into WEB_ROOT
+	install -d $(WEB_ROOT)/vendor/hls $(WEB_ROOT)/vendor/ovenplayer $(WEB_ROOT)/vendor/flatpickr
+	curl -fsSL "https://cdn.jsdelivr.net/npm/hls.js@$(HLSJS_VER)/dist/hls.min.js" \
+		-o "$(WEB_ROOT)/vendor/hls/hls.min.js"
+	curl -fsSL "https://cdn.jsdelivr.net/npm/ovenplayer@$(OVENPLAYER_VER)/dist/ovenplayer.js" \
+		-o "$(WEB_ROOT)/vendor/ovenplayer/ovenplayer.js"
+	# Flatpickr: include unminified and minified + CSS
+	curl -fsSL "https://cdn.jsdelivr.net/npm/flatpickr@$(FLATPICKR_VER)/dist/flatpickr.js" \
+		-o "$(WEB_ROOT)/vendor/flatpickr/flatpickr.js"
+	curl -fsSL "https://cdn.jsdelivr.net/npm/flatpickr@$(FLATPICKR_VER)/dist/flatpickr.min.js" \
+		-o "$(WEB_ROOT)/vendor/flatpickr/flatpickr.min.js"
+	curl -fsSL "https://cdn.jsdelivr.net/npm/flatpickr@$(FLATPICKR_VER)/dist/flatpickr.min.css" \
+		-o "$(WEB_ROOT)/vendor/flatpickr/flatpickr.min.css"
+
 	@echo "Upgrade complete."
 
 uninstall:
@@ -64,6 +99,9 @@ uninstall:
 	rm -f $(WEB_ROOT)/kiosk.html
 	rm -f $(WEB_ROOT)/live.html
 	rm -f $(WEB_ROOT)/version.txt
+
+	# Remove vendored assets
+	rm -rf $(WEB_ROOT)/vendor
 
 	# Reload Nginx if installed and active
 	if systemctl is-active --quiet nginx; then \
