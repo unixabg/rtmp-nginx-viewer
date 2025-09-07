@@ -21,6 +21,7 @@
       padding: .5rem;
       background: #f7f7f7;
     }
+    .cam-card.unknown { border-color: #e1b000; background: #fff9e6; }
     .cam-card.stale { border-color: #d00; background: #fff2f2; }
     .cam-title { font-weight: 600; font-size: .95rem; margin-bottom: .25rem; word-break: break-word; }
     .cam-meta { font-size: .8rem; line-height: 1.2; opacity: .85; }
@@ -39,6 +40,8 @@
   <div class="sys-wrap">
     <div class="sys-header">
       <h1 style="margin:0;">Camera Status</h1>
+      <a href="/" class="nav-link" style="display: inline-block; margin: 10px;">Back to Home</a>
+      <span id="camCount" class="sys-status pill">0 cams</span>
       <span id="serverTime" class="sys-status pill" title="Server time (from Date header)">…</span>
       <span id="updatedAt" class="sys-status" style="margin-left:.25rem;">(loading…)</span>
       <div class="sys-toolbar">
@@ -58,6 +61,7 @@
     const els = {
       grid: document.getElementById('grid'),
       serverTime: document.getElementById('serverTime'),
+      camCount: document.getElementById('camCount'),
       updatedAt: document.getElementById('updatedAt'),
       refreshBtn: document.getElementById('refreshBtn'),
     };
@@ -158,6 +162,7 @@
         els.grid.appendChild(frag);
 
         // Fetch Last-Modified for each file via HEAD (server authoritative time)
+        let active = 0, stale = 0, unknown = 0;
         await Promise.all(files.map(async (name) => {
           try {
             const url = `${THUMB_DIR}${encodeURIComponent(name)}?head=${Date.now()}`;
@@ -175,15 +180,22 @@
               lmEl.textContent = `${fmt(lastMod)} UTC`;
               if (ageMs > STALE_MS) {
                 card.classList.add('stale');
+                // count stale
+                stale++;
                 // Optional: add a visible pill
                 const pill = document.createElement('span');
                 pill.className = 'pill red';
                 pill.textContent = 'STALE >10min';
                 card.querySelector('.cam-title').append(' ', pill);
+              } else {
+                // count active
+                active++;
               }
             } else {
               ageEl.textContent = 'unknown';
               lmEl.textContent = 'n/a';
+              card.classList.add('unknown');
+              unknown++;
             }
           } catch (e) {
             const card = cardMap.get(name);
@@ -194,6 +206,8 @@
           }
         }));
 
+        const plural = (n,w)=>`${n} ${w}${n===1?'':'s'}`;
+        els.camCount.textContent = `${plural(active,'active')}, ${plural(stale,'stale')}, ${plural(unknown,'unknown')} / ${plural(files.length,'cam')}`;
         els.updatedAt.textContent = `Updated: ${fmt(new Date())}`;
       } catch (err) {
         els.grid.innerHTML = `<div class="cam-meta" style="color:#d00;">Error: ${err.message}</div>`;
