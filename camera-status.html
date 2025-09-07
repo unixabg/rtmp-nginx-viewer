@@ -28,12 +28,50 @@
     .cam-thumb {
       display:block; width: 100%; height: 110px; object-fit: cover;
       border-radius: .35rem; margin-bottom: .4rem; background: #ddd;
+      cursor: zoom-in; /* ADDED: hint that it opens */
     }
     .sys-status { font-size:.85rem; opacity:.8; }
     .pill { display:inline-block; padding:.15rem .4rem; border-radius:999px; font-size:.75rem; background:#eee; }
     .pill.red { background:#d00; color:#fff; }
-    .sys-toolbar { display:flex; gap:.5rem; align-items:center; margin-left:auto; }
+    .sys-toolbar { display:flex; gap:.5rem; align-items:center; }
+
     button.sys-btn { cursor:pointer; padding:.35rem .6rem; border-radius:.35rem; border:1px solid #ccc; background:#fff; }
+
+    /* ===== MODAL (ADDED) ===== */
+    .modal {
+      display: none;                /* hidden by default */
+      position: fixed;
+      z-index: 9999;
+      inset: 0;                     /* top:0; right:0; bottom:0; left:0 */
+      background: rgba(200,200,200,0.85); /* light grey, semi-transparent */
+      justify-content: center;
+      align-items: center;
+      padding: 1rem;                /* breathing room on phones */
+    }
+    .modal.open { display: flex; }  /* toggled on via JS */
+    .modal-content {
+      max-width: 90vw;
+      max-height: 90vh;
+      border-radius: .5rem;
+      box-shadow: 0 4px 20px rgba(0,0,0,0.5);
+      width: auto;
+      height: auto;
+      object-fit: contain;
+      background: #111;             /* avoid white flash */
+    }
+    .modal-close {
+      position: absolute;
+      top: .75rem;
+      right: .75rem;
+      font-size: 2rem;
+      color: #222;
+      cursor: pointer;
+      font-weight: bold;
+      line-height: 1;
+      user-select: none;
+    }
+    .modal-close:focus { outline: 2px solid #fff; outline-offset: 2px; }
+    /* ===== END MODAL (ADDED) ===== */
   </style>
 </head>
 <body>
@@ -53,6 +91,13 @@
     <div id="grid" class="sys-grid" aria-live="polite"></div>
   </div>
 
+  <!-- ===== MODAL MARKUP (ADDED) ===== -->
+  <div id="imgModal" class="modal" role="dialog" aria-modal="true" aria-label="Image preview">
+    <button class="modal-close" id="modalClose" aria-label="Close preview">&times;</button>
+    <img class="modal-content" id="modalImg" alt="Full-size camera thumbnail">
+  </div>
+  <!-- ===== END MODAL MARKUP (ADDED) ===== -->
+
   <script>
     const THUMB_DIR = '/thumbnails/';
     const STALE_MS = 10 * 60 * 1000; // 10 minutes
@@ -64,6 +109,10 @@
       camCount: document.getElementById('camCount'),
       updatedAt: document.getElementById('updatedAt'),
       refreshBtn: document.getElementById('refreshBtn'),
+      // ADDED (modal elements)
+      modal: document.getElementById('imgModal'),
+      modalImg: document.getElementById('modalImg'),
+      modalClose: document.getElementById('modalClose'),
     };
 
     function fmt(dt) {
@@ -145,11 +194,11 @@
         for (const name of files) {
           const card = document.createElement('div');
           card.className = 'cam-card';
+
           card.innerHTML = `
-            <a href="${THUMB_DIR}${encodeURIComponent(name)}" target="_blank" rel="noopener noreferrer">
-              <img class="cam-thumb" loading="lazy" alt="${name}"
-                   src="${THUMB_DIR}${encodeURIComponent(name)}?t=${Date.now()}">
-            </a>
+            <img class="cam-thumb" loading="lazy" alt="${name}"
+                 data-full="${THUMB_DIR}${encodeURIComponent(name)}?t=${Date.now()}"
+                 src="${THUMB_DIR}${encodeURIComponent(name)}?t=${Date.now()}">
             <div class="cam-title">${name}</div>
             <div class="cam-meta">
               <div>Age: <span class="age">…</span></div>
@@ -180,15 +229,12 @@
               lmEl.textContent = `${fmt(lastMod)} UTC`;
               if (ageMs > STALE_MS) {
                 card.classList.add('stale');
-                // count stale
                 stale++;
-                // Optional: add a visible pill
                 const pill = document.createElement('span');
                 pill.className = 'pill red';
                 pill.textContent = 'STALE >10min';
                 card.querySelector('.cam-title').append(' ', pill);
               } else {
-                // count active
                 active++;
               }
             } else {
@@ -219,6 +265,35 @@
     els.refreshBtn.addEventListener('click', () => load());
     load();
     setInterval(load, AUTO_REFRESH_MS);
+
+    // ===== MODAL LOGIC (ADDED) =====
+    // Open on thumbnail click (event delegation)
+    document.addEventListener('click', (e) => {
+      const img = e.target.closest('.cam-thumb');
+      if (!img) return;
+      const full = img.getAttribute('data-full') || img.src;
+      els.modalImg.src = full;
+      els.modal.classList.add('open');
+      // Accessibility: focus close for keyboard users
+      els.modalClose.focus();
+      // Prevent background scroll on mobile (optional)
+      document.body.style.overflow = 'hidden';
+    });
+
+    // Close handlers: X button, ESC, click on backdrop
+    function closeModal() {
+      els.modal.classList.remove('open');
+      els.modalImg.removeAttribute('src');
+      document.body.style.overflow = ''; // restore scroll
+    }
+    els.modalClose.addEventListener('click', closeModal);
+    els.modal.addEventListener('click', (e) => {
+      if (e.target === els.modal) closeModal(); // only if clicking the backdrop
+    });
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && els.modal.classList.contains('open')) closeModal();
+    });
+    // ===== END MODAL LOGIC (ADDED) =====
   </script>
 </body>
 </html>
