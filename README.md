@@ -35,7 +35,7 @@ Become root user:
 
 Install some things I find helpful in container setups and the nginx and nginx-rtmp-module:
 
-```apt install build-essential ffmpeg vim git nginx libnginx-mod-rtmp```
+```apt install build-essential ffmpeg vim git nginx libnginx-mod-rtmp curl```
 
 Clone the repo:
 
@@ -69,10 +69,6 @@ Set the permissions so nginx can write to the folder:
 
 Edit the installed /etc/nginx/nginx.conf and unremark the recording section.
 Edit the installed /etc/nginx/sites-enabled/default and unremark the /recordings location.
-
-Install ffmpeg:
-
-```apt install ffmpeg```
 
 Restart nginx:
 
