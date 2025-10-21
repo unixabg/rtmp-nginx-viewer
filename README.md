@@ -55,13 +55,17 @@ Restart nginx:
 
 ```systemctl restart nginx```
 
-If you want the nvr features below is the general outline. Create a the folder for video recording storage:
+If you want the nvr features below is the general outline. Create a the folder for video recording and thumbnail storage:
 
 ```mkdir -p /videos/recordings```
+```mkdir -p /videos/thumbnails```
 
+> [!NOTE]
+> Be careful here if you have mounted a block device to /videos
 Set the permissions so nginx can write to the folder:
 
-```chown -R www-data: /videos```
+```chown -R www-data: /videos/recordings```
+```chown -R www-data: /videos/thumbnails```
 
 Edit the installed /etc/nginx/nginx.conf and unremark the recording section.
 Edit the installed /etc/nginx/sites-enabled/default and unremark the /recordings location.
