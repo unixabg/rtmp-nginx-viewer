@@ -10,7 +10,31 @@ HLSJS_VER      ?= 1.5.8
 OVENPLAYER_VER ?= 0.10.19
 FLATPICKR_VER  ?= 4.6.13
 
-install:
+# Dependency check target
+REQUIRED_PKGS := build-essential ffmpeg vim git nginx libnginx-mod-rtmp curl
+
+check_deps:
+	@echo "Checking required packages..."
+	@missing=""; \
+	for pkg in $(REQUIRED_PKGS); do \
+		if ! dpkg -s $$pkg >/dev/null 2>&1; then \
+			echo "Missing: $$pkg"; \
+			missing="$$missing $$pkg"; \
+		else \
+			echo "Found: $$pkg"; \
+		fi; \
+	done; \
+	if [ -n "$$missing" ]; then \
+		echo ""; \
+		echo "The following packages are missing:$$missing"; \
+		echo "You can install them with:"; \
+		echo "  sudo apt install$$missing"; \
+		exit 1; \
+	else \
+		echo "All dependencies are installed."; \
+	fi
+
+install: check_deps
 	# Backup existing configurations and web content if they exist
 	[ -f $(NGINX_CONF_DIR)/nginx.conf ] && cp $(NGINX_CONF_DIR)/nginx.conf $(NGINX_CONF_DIR)/nginx.conf.backup || true
 	[ -f $(SITES_AVAILABLE)/default ] && cp $(SITES_AVAILABLE)/default $(SITES_AVAILABLE)/default.backup || true
