@@ -7,7 +7,7 @@ SITES_ENABLED=$(NGINX_CONF_DIR)/sites-enabled
 
 # ----- Minimal pinned versions for local JS/CSS -----
 HLSJS_VER      ?= 1.5.8
-OVENPLAYER_VER ?= 0.10.19
+OVENPLAYER_VER ?= 0.10.43
 FLATPICKR_VER  ?= 4.6.13
 
 # Dependency check target
