@@ -47,7 +47,8 @@ while IFS=' ' read -r CAMERA_NAME RTSP_URL; do
         while true; do
 
             echo "$(date) - Starting FFmpeg for ${CAMERA_NAME}" >> "$LOG_FILE"
-            ffmpeg -timeout 5000000 -i "$RTSP_URL" -acodec copy -vcodec copy -f flv "${RTMP_SERVER_URL}/${CAMERA_NAME}" >> "$LOG_FILE" 2>&1
+            #ffmpeg -timeout 5000000 -i "$RTSP_URL" -acodec copy -vcodec copy -f flv "${RTMP_SERVER_URL}/${CAMERA_NAME}" >> "$LOG_FILE" 2>&1
+            ffmpeg -hide_banner -loglevel repeat+level+warning -stats_period 60 -timeout 5000000 -i "$RTSP_URL" -acodec copy -vcodec copy -f flv "${RTMP_SERVER_URL}/${CAMERA_NAME}" >> "$LOG_FILE" 2>&1
             EXIT_STATUS=$?
 
             echo "$(date) - FFmpeg exited with status $EXIT_STATUS for ${CAMERA_NAME}" >> "$LOG_FILE"
