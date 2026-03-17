@@ -56,6 +56,8 @@ install: check_deps
 	install -m 644 live.html $(WEB_ROOT)/
 	install -m 644 style.css $(WEB_ROOT)/
 	install -m 644 version.txt $(WEB_ROOT)/
+	# Install cron job for recording housekeeping
+	install -m 644 crontab /etc/cron.d/rtmp-nginx-viewer
 
 	# Minimal: fetch JS/CSS deps directly into WEB_ROOT
 	install -d $(WEB_ROOT)/vendor/hls $(WEB_ROOT)/vendor/ovenplayer $(WEB_ROOT)/vendor/flatpickr
@@ -123,6 +125,8 @@ uninstall:
 	rm -f $(WEB_ROOT)/kiosk.html
 	rm -f $(WEB_ROOT)/live.html
 	rm -f $(WEB_ROOT)/version.txt
+	# Remove cron job
+	rm -f /etc/cron.d/rtmp-nginx-viewer
 
 	# Remove vendored assets
 	rm -rf $(WEB_ROOT)/vendor

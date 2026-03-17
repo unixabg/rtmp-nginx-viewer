@@ -1,0 +1,9 @@
+# /etc/cron.d/rtmp-nginx-viewer
+# Housekeeping for rtmp-nginx-viewer recordings.
+# See /etc/nginx/nginx.conf for recording configuration.
+
+# Delete recordings older than 30 days - run nightly at 2am
+#0 2 * * *  www-data  /usr/bin/find /videos/recordings -type f -mtime +30 -delete
+
+# Delete orphaned FLVs older than 20 minutes - run every 30 min
+#*/30 * * * *  www-data  /usr/bin/find /videos/recordings -type f -name "*.flv" -mmin +20 -delete
