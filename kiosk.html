@@ -1,6 +1,10 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
+    <!-- NOTE: page-level meta-refresh removed on purpose.
+         Refreshing is now handled entirely in JS (reloadCameras) so the two
+         mechanisms can't race. A full-document meta-refresh also caused a
+         visible flash; the JS reload tears players down cleanly instead. -->
     <meta charset="UTF-8">
     <title>Kiosk Mode</title>
     <script src="./vendor/hls/hls.min.js"></script>
@@ -56,27 +60,42 @@
         const urlParams = new URLSearchParams(window.location.search);
         const camsParam = urlParams.get('cams');
 
-        // Honor the documented refresh= URL parameter (value in seconds).
-        // Example: kiosk.html?cams=Camera0,Camera31&refresh=120
-        // Falls back to 300 seconds (5 minutes) if not provided or invalid.
-        const DEFAULT_REFRESH_SECONDS = 300;
+        // Allow the refresh interval to be set via ?refresh=<seconds>.
+        // Falls back to 300 seconds (5 minutes) if the param is missing/invalid.
         const refreshParam = parseInt(urlParams.get('refresh'), 10);
-        const refreshSeconds = (Number.isFinite(refreshParam) && refreshParam > 0)
+        const REFRESH_SECONDS = (Number.isFinite(refreshParam) && refreshParam > 0)
             ? refreshParam
-            : DEFAULT_REFRESH_SECONDS;
-        const REFRESH_INTERVAL_MS = refreshSeconds * 1000;
+            : 300;
+        const REFRESH_INTERVAL_MS = REFRESH_SECONDS * 1000;
 
         let cameras = [];
         let playerContainers = {};
-        let refreshTimer = null;
 
         if (camsParam) {
             cameras = camsParam.split(',').map(cam => cam.trim()).filter(cam => cam.length > 0);
         }
 
+        // Tear down a single OvenPlayer instance and release all its resources.
+        // OvenPlayer's documented teardown method is .remove() (NOT .destroy()).
+        // Using the wrong method silently threw and left every player alive,
+        // leaking MediaSource buffers/decoders on each refresh until the
+        // machine locked up. We defensively support .remove(), and fall back
+        // to .destroy() only if a fork exposes that instead.
+        function destroyPlayer(player) {
+            try {
+                if (player && typeof player.remove === 'function') {
+                    player.remove();
+                } else if (player && typeof player.destroy === 'function') {
+                    player.destroy();
+                }
+            } catch (e) {
+                console.error('Error removing player', e);
+            }
+        }
+
         function loadCameras() {
             const wrapper = document.getElementById('wrapper');
-            wrapper.innerHTML = ''; // Clear previous
+            wrapper.innerHTML = ''; // Clear previous DOM
 
             cameras.forEach(name => {
                 const container = document.createElement('div');
@@ -112,9 +131,8 @@
         }
 
         function reloadCameras() {
-            Object.values(playerContainers).forEach(player => {
-                try { player.destroy(); } catch (e) { console.error('Error destroying player', e); }
-            });
+            // Properly release every existing player BEFORE creating new ones.
+            Object.values(playerContainers).forEach(destroyPlayer);
             playerContainers = {};
             loadCameras();
         }
@@ -122,9 +140,7 @@
         function updateGridLayout() {
             const wrapper = document.getElementById('wrapper');
             const camCount = cameras.length;
-            if (camCount === 0) return;
-
-            let rows = Math.max(1, Math.floor(Math.sqrt(camCount)));
+            let rows = Math.floor(Math.sqrt(camCount));
             let cols = Math.ceil(camCount / rows);
 
             wrapper.style.gridTemplateRows = `repeat(${rows}, 1fr)`;
@@ -133,10 +149,18 @@
 
         if (cameras.length > 0) {
             loadCameras();
-            refreshTimer = setInterval(reloadCameras, REFRESH_INTERVAL_MS);
+            setInterval(reloadCameras, REFRESH_INTERVAL_MS);
         } else {
-            document.getElementById('wrapper').innerHTML = '<p style="text-align: center; margin-top: 50px; color: white;">No cameras specified. Please add ?cams=Cam1,Cam2 to the URL.</p>';
+            document.getElementById('wrapper').innerHTML =
+                '<p style="text-align: center; margin-top: 50px; color: white;">No cameras specified. Please add ?cams=Cam1,Cam2 to the URL.</p>';
         }
+
+        // Release players if the page itself is being unloaded/navigated,
+        // so a full reload doesn't leave orphaned decoders behind.
+        window.addEventListener('pagehide', () => {
+            Object.values(playerContainers).forEach(destroyPlayer);
+            playerContainers = {};
+        });
 
         // Optional: Fullscreen on first click
         document.addEventListener('DOMContentLoaded', () => {
