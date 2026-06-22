@@ -80,7 +80,7 @@ body {
 /* Input Field Styling */
 #search-wrapper input[type="text"] {
     border: 2px solid #ccc;
-    border-radius: 20px 0 0 20px; /* Rounded corners on the left side */
+    border-radius: 20px; /* Fully rounded; input no longer sits flush against the buttons */
     padding: 10px;
     width: 75%; /* Adjust based on preference */
     max-width: 300px; /* Ensures it doesn't get too wide on larger screens */
@@ -91,8 +91,9 @@ body {
 /* Button Styling */
 #search-wrapper button {
     border: 2px solid #ccc;
-    border-radius: 0 20px 20px 0; /* Rounded corners on the right side */
+    border-radius: 20px; /* Fully rounded so multiple buttons match (Search, Refresh) */
     padding: 10px 20px;
+    margin-left: 8px; /* Small gap between adjacent buttons */
     background-color: #f2f2f2; /* Light grey background */
     color: #333; /* Dark text for contrast */
     font-size: 1rem; /* Matches the input field's font size */

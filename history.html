@@ -8,11 +8,45 @@
     <script src="./vendor/hls/hls.min.js"></script>
     <script src="./vendor/ovenplayer/ovenplayer.js"></script>
     <script src="./vendor/flatpickr/flatpickr.js"></script>
+    <style>
+        .system-status {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            margin: 10px 0;
+            font-size: 0.85em;
+            min-height: 1.4em;
+        }
+        .system-status.status-ok    { color: #2e7d32; }
+        .system-status.status-error { color: #c62828; }
+        .status-spinner {
+            width: 14px;
+            height: 14px;
+            border: 2px solid rgba(0, 0, 0, 0.2);
+            border-top-color: #555;
+            border-radius: 50%;
+            animation: status-spin 0.8s linear infinite;
+            flex: 0 0 auto;
+        }
+        /* Hide the spinner once we have resolved to a steady state. */
+        .system-status.status-ok .status-spinner,
+        .system-status.status-error .status-spinner {
+            display: none;
+        }
+        @keyframes status-spin {
+            to { transform: rotate(360deg); }
+        }
+    </style>
 </head>
 <body>
 <div id="welcomeContainer">
     <div id="welcomeMessage">
         <p>Welcome! Please query your camera recordings history.</p>
+        <div id="systemStatus" class="system-status" role="status" aria-live="polite">
+            <span class="status-spinner" aria-hidden="true"></span>
+            <span id="systemStatusText">Connecting to recordings service&hellip;</span>
+        </div>
         <div id="versionInfo" style="text-align: center; margin: 10px 0; font-size: 0.6em;"></div>
         <script>
             fetch(`/version.txt?timestamp=${new Date().getTime()}`)
@@ -29,6 +63,7 @@
         <input type="text" id="searchTerm" placeholder="Example: Building room" onkeyup="searchOnEnter(event)" style="border-radius: 20px 20px 20px 20px;">
         <input type="text" id="datetimePicker" placeholder="Select Date and Time">
         <button id="searchButton" onclick="filterRecordings()">Search</button>
+        <button id="refreshButton" onclick="refreshRecordings()" title="Re-check the server for new recordings">Refresh</button>
         <button id="resetButton" onclick="window.location.reload()" style="display: none;">Reset</button>
     </div>
 </div>
@@ -51,6 +86,23 @@
     <p>No matching recordings found. Please adjust your search criteria and try again.</p>
 </div>
 <script>
+    // Update the small "is the system working?" indicator near the top of the
+    // page. state is one of: 'loading' (spinner + neutral), 'ok' (green), or
+    // 'error' (red). The element lives inside the welcome message, which is
+    // hidden once a search runs, so the status is only shown pre-search.
+    function setSystemStatus(state, message) {
+        const el = document.getElementById('systemStatus');
+        const txt = document.getElementById('systemStatusText');
+        if (!el || !txt) return;
+        el.classList.remove('status-ok', 'status-error');
+        if (state === 'ok') {
+            el.classList.add('status-ok');
+        } else if (state === 'error') {
+            el.classList.add('status-error');
+        }
+        txt.innerHTML = message;
+    }
+
     document.addEventListener('DOMContentLoaded', function() {
         window.searchOnEnter = function(event) { // Define globally to resolve reference error
             if (event.keyCode === 13) { // 13 is the Enter key
@@ -69,7 +121,11 @@
         fetchAvailableDates(flatpickrInstance);
     });
 
-    let recordings = []; // Array to store recording information fetched from the server
+    let recordings = []; // Array to store recording information for the current time window
+    let allRecordings = []; // Cached parse of the full /recordings listing (fetched once, reused while paging)
+    let recordingsCacheTime = 0; // Timestamp (ms) of the last successful /recordings fetch; 0 means no cache yet
+    let recordingsFetchInFlight = null; // Promise of an in-progress fetch, so concurrent callers share one request
+    const RECORDINGS_CACHE_TTL = 60 * 1000; // Re-fetch the listing if the cache is older than this (ms)
     let playerContainers = {}; // Object to store player instances for each recording
     let currentWindowStart = new Date(); // Variable to track the start of the current time window
     let currentPage = 1; // Variable to track the current page in pagination
@@ -89,43 +145,49 @@
         document.getElementById('currentWindow').innerText = description;
     }
 
-    // Fetch available dates based on recording files from /recordings endpoint
+    // Fetch available dates based on recording files from /recordings endpoint.
+    // Uses the shared cache so the listing is downloaded and parsed only once
+    // for both date-highlighting and searching.
     function fetchAvailableDates(flatpickrInstance) {
-        fetch('/recordings')
-            .then(response => response.text()) // Assuming /recordings returns a list of files in plain text
-            .then(responseText => {
-                const availableDates = parseRecordingDates(responseText);
+        setSystemStatus('loading', 'Connecting to recordings service&hellip;');
+        loadAllRecordings(false)
+            .then(all => {
+                const availableDates = datesFromRecordings(all);
                 console.log('Highlighting these dates in Flatpickr:', availableDates);
                 flatpickrInstance.set('enable', availableDates);
+
+                if (availableDates.length > 0) {
+                    const dayLabel = availableDates.length === 1 ? 'day' : 'days';
+                    setSystemStatus('ok',
+                        'System online &mdash; recordings available on ' +
+                        availableDates.length + ' ' + dayLabel + '. Select a date and search.');
+                } else {
+                    setSystemStatus('ok',
+                        'System online &mdash; no recordings found yet.');
+                }
             })
-            .catch(error => console.error('Error fetching available dates:', error));
+            .catch(error => {
+                console.error('Error fetching available dates:', error);
+                setSystemStatus('error',
+                    'Could not reach the recordings service. Check that the server is running and try reloading.');
+            });
     }
 
-    // Parse the response text from the server to extract recording dates
-    function parseRecordingDates(responseText) {
-        const lines = responseText.split('\n');
-        const dates = new Set();
-
-        // Regular expression to match lines containing .mp4 files with date in the filename
-        const regex = /<a href=".*?-(\d{8})-\d{6}\.mp4">/;
-
-        lines.forEach(line => {
-            const match = line.match(regex);
-            if (match) {
-                const dateStr = match[1]; // Extract the date (YYYYMMDD)
-                const year = parseInt(dateStr.substring(0, 4), 10);
-                const month = parseInt(dateStr.substring(4, 6), 10) - 1; // Month is 0-indexed
-                const day = parseInt(dateStr.substring(6, 8), 10);
-
-                // Create a local Date object
-                dates.add(new Date(year, month, day));
+    // Derive the set of distinct calendar days present in a parsed recordings
+    // array (replaces the old parseRecordingDates, which re-parsed raw HTML).
+    function datesFromRecordings(list) {
+        const seen = new Set();
+        const dates = [];
+        list.forEach(r => {
+            if (!seen.has(r.date)) {
+                seen.add(r.date);
+                const [year, month, day] = r.date.split('-').map(n => parseInt(n, 10));
+                dates.push(new Date(year, month - 1, day));
             }
         });
-
-        console.log('Parsed Dates:', Array.from(dates));
-        // Convert the set of dates to an array of Date objects
-        return Array.from(dates).map(dateStr => new Date(dateStr));
+        return dates;
     }
+
 
     // Function to add a recording's player container to the DOM
     function addRecording(name, date, time, fullName) {
@@ -194,6 +256,23 @@
             }
         });
         playerContainers = {}; // Reset the player containers
+    }
+
+    // Force a fresh pull from the server (the listing is otherwise cached so
+    // paging stays instant). Re-renders whatever the user is currently viewing:
+    // the active time window if a search is in progress, or just the highlighted
+    // dates and status if still on the welcome screen.
+    function refreshRecordings() {
+        recordingsCacheTime = 0; // Invalidate the cache so loadAllRecordings re-fetches
+        const searchInProgress =
+            document.getElementById('timeWindowControls').style.display !== 'none';
+
+        if (searchInProgress) {
+            fetchAndDisplayRecordings();
+        } else {
+            const picker = document.getElementById('datetimePicker')._flatpickr;
+            fetchAvailableDates(picker);
+        }
     }
 
     // Function to filter recordings based on user search input and datetime
@@ -295,33 +374,85 @@
         document.getElementById('currentPage').innerText = `Page ${currentPage} of ${Math.ceil(recordings.length / RECORDINGS_PER_PAGE)}`;
     }
 
-    // Function to fetch recordings from the server based on search terms and date range
-    function fetchRecordings(searchTerms, startDateTime, endDateTime) {
-        console.log('Request recorded streams');
-        var xhr = new XMLHttpRequest();
-        xhr.open('GET', `${window.location.origin}/recordings`, true);
-        xhr.responseType = 'text';
-        xhr.onload = function () {
-            if (xhr.status === 200) {
-                const responseText = xhr.responseText;
-                recordings = parseRecordingFiles(responseText); // Parse the recordings from the server response
+    // Fetch the full /recordings listing once and cache the parsed result.
+    // Subsequent calls return the cache (and a resolved promise) until it goes
+    // stale, so time-window paging filters in memory instead of re-downloading
+    // and re-parsing the entire directory on every click. Pass forceRefresh to
+    // bypass the cache (used by the manual Refresh button).
+    function loadAllRecordings(forceRefresh) {
+        const cacheIsFresh = allRecordings.length >= 0 &&
+            recordingsCacheTime > 0 &&
+            (Date.now() - recordingsCacheTime) < RECORDINGS_CACHE_TTL;
 
-                // Filter recordings within the specified time range
-                recordings = recordings.filter(recording => {
+        if (!forceRefresh && cacheIsFresh) {
+            return Promise.resolve(allRecordings);
+        }
+        // Coalesce concurrent callers onto a single in-flight request.
+        if (recordingsFetchInFlight && !forceRefresh) {
+            return recordingsFetchInFlight;
+        }
+
+        recordingsFetchInFlight = fetch(`${window.location.origin}/recordings`)
+            .then(response => {
+                if (!response.ok) {
+                    throw new Error('HTTP ' + response.status);
+                }
+                return response.text();
+            })
+            .then(responseText => {
+                allRecordings = parseRecordingFiles(responseText);
+                recordingsCacheTime = Date.now();
+                recordingsFetchInFlight = null;
+                return allRecordings;
+            })
+            .catch(error => {
+                recordingsFetchInFlight = null;
+                throw error;
+            });
+
+        return recordingsFetchInFlight;
+    }
+
+    // Filter the cached listing down to the current window/search and render it.
+    // No network round-trip here unless the cache is stale, so paging between
+    // time windows is effectively instant.
+    function fetchRecordings(searchTerms, startDateTime, endDateTime) {
+        console.log('Request recorded streams (from cache when available)');
+        const wrapper = document.getElementById('wrapper');
+        const noResults = document.getElementById('noResultsMessage');
+        noResults.style.display = 'none';
+
+        // Only show the spinner when we actually have to hit the network.
+        const willFetch = !(recordingsCacheTime > 0 &&
+            (Date.now() - recordingsCacheTime) < RECORDINGS_CACHE_TTL);
+        if (willFetch) {
+            wrapper.innerHTML = '<p style="text-align:center; color:#555;">' +
+                '<span class="status-spinner" style="display:inline-block; vertical-align:middle; margin-right:8px;"></span>' +
+                'Loading recordings&hellip;</p>';
+        }
+
+        loadAllRecordings(false)
+            .then(all => {
+                // Filter the cached list to the requested window and search terms.
+                recordings = all.filter(recording => {
                     const recordingDateTime = new Date(`${recording.date}T${recording.time}`);
-                    return recordingDateTime >= startDateTime && recordingDateTime < endDateTime && searchTerms.every(term => recording.name.toLowerCase().includes(term));
+                    return recordingDateTime >= startDateTime &&
+                           recordingDateTime < endDateTime &&
+                           searchTerms.every(term => recording.name.toLowerCase().includes(term));
                 });
 
-                // Sort recordings by date and time
                 recordings.sort((a, b) => new Date(`${a.date} ${a.time}`) - new Date(`${b.date} ${b.time}`));
-                currentPage = 1; // Reset to the first page
-                displayRecordings(); // Display the filtered recordings
-            }
-        };
-        xhr.onerror = function () {
-            alert('Failed to fetch recordings. Please try again.');
-        };
-        xhr.send();
+                currentPage = 1;
+                wrapper.innerHTML = ''; // Clear any loading indicator
+                displayRecordings();
+
+                noResults.style.display = recordings.length === 0 ? 'block' : 'none';
+            })
+            .catch(error => {
+                console.error('Error fetching recordings:', error);
+                wrapper.innerHTML = '';
+                alert('Failed to fetch recordings. Please try again.');
+            });
     }
 
     // Function to parse the response text and extract recording information
