@@ -68,6 +68,24 @@ server {
 		add_header Cache-Control no-cache;
 	}
 
+	location /sub-hls {
+		# Serve HLS fragments for the cam-sub (low-res) application.
+		# Matches hls_path /tmp/sub-hls in nginx.conf.
+		types {
+			application/vnd.apple.mpegurl m3u8;
+			video/mp2t ts;
+		}
+		root /tmp;
+		add_header Cache-Control no-cache;
+	}
+
+	location /sub-dash {
+		# Serve DASH fragments for the cam-sub (low-res) application.
+		# Matches dash_path /tmp/sub-dash in nginx.conf.
+		root /tmp;
+		add_header Cache-Control no-cache;
+	}
+
 	location /thumbnails {
 		# Serve video fragments
 		alias /videos/thumbnails;

@@ -76,11 +76,50 @@ Restart nginx:
 
 ### Kiosk Feature
 
-I have added a kiosk feature that utilizes the kiosk.html file for calling a given camera group to be displayed with something like:
+I have added a kiosk feature that utilizes the kiosk.html file for calling a given camera group to be displayed in an automatic grid on the browser. Point a kiosk URL at a group of cameras like so:
 
-```kiosk.html?cams=Camera0,Camera31,Cam7&refresh=3```
+```kiosk.html?cams=Camera0,Camera31,Cam7&refresh=120```
 
-The above should compose the cameras in the specified order and in an automatic grid on the browser.
+The cameras are composed in the order specified and the grid arranges itself based on how many cameras you list.
+
+The URL accepts two parameters:
+
+- `cams` — a comma-separated list of cameras to display, in order.
+- `refresh` — optional, the number of **seconds** between full player rebuilds. The rebuild reconnects every stream so a kiosk can recover from a camera that dropped and came back. If omitted it defaults to 300 (5 minutes).
+
+By default each entry in `cams` is pulled from the `cam` application, so `Camera0` resolves to `hls/Camera0.m3u8`. You may also target a specific application by prefixing the entry with the application name and a colon (see the sub-stream section below):
+
+```kiosk.html?cams=cam-sub:Camera0,cam-sub:Camera31,Cam7&refresh=120```
+
+In the example above `Camera0` and `Camera31` are pulled from the lower-resolution `cam-sub` application while `Cam7` (no prefix) is pulled from the default `cam` application. The overlay label on each tile uses just the camera name.
+
+> [!NOTE]
+> Large camera resolutions are expensive for the kiosk machine to decode. Each tile is a full decode pipeline in the browser, so a wall of high-resolution streams can make the viewing station sluggish even though each tile is small on screen. If you are running grids of more than a handful of cameras, use the sub-stream application below so the kiosk decodes small streams instead of full-resolution main streams.
+
+### Sub-stream Application for Kiosk Grids
+
+To keep the kiosk machine responsive I run a second RTMP application named `cam-sub` that carries lower-resolution streams just for grid viewing. The main `cam` application is left for recording and single-camera live views, while `cam-sub` feeds the kiosk. Where a camera offers a native sub-stream (most do), pulling it is far cheaper than asking the server to transcode.
+
+The pieces that make this work are already in the project files:
+
+- `nginx.conf` defines the `cam-sub` application with `hls_path /tmp/sub-hls` and includes `cameras-sub.conf`.
+- The `default` site serves the sub-stream HLS at the `/sub-hls` location.
+- `cameras-sub.conf` holds the low-resolution pull lines for `cam-sub`.
+
+Add your low-resolution pulls to /etc/nginx/cameras-sub.conf. Use the **same** `name=` value as the matching entry in cameras.conf so a camera is reachable as both `cam/<name>` (main) and `cam-sub/<name>` (sub):
+
+```#pull rtmp://ipAddress/bcs/channel0_sub.bcs?channel=0&stream=0&user=admin&password=yourPassword name=CamName static;```
+
+Restart nginx:
+
+```systemctl restart nginx```
+
+You can confirm a sub-stream is reachable by loading its playlist directly in a browser before adding it to a kiosk grid:
+
+```http://your-server/sub-hls/CamName.m3u8```
+
+> [!NOTE]
+> The sub-stream HLS segments are written to /tmp/sub-hls. If you have any housekeeping that cleans /tmp, make sure it does not sweep the live segment directories out from under nginx.
 
 ### Links
 https://jared.geek.nz/2023/11/streaming-rtmp-with-openwrt/

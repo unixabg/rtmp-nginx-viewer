@@ -1,10 +1,6 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <!-- NOTE: page-level meta-refresh removed on purpose.
-         Refreshing is now handled entirely in JS (reloadCameras) so the two
-         mechanisms can't race. A full-document meta-refresh also caused a
-         visible flash; the JS reload tears players down cleanly instead. -->
     <meta charset="UTF-8">
     <title>Kiosk Mode</title>
     <script src="./vendor/hls/hls.min.js"></script>
@@ -37,7 +33,7 @@
             left: 0;
             width: 100%;
             height: 100%;
-            object-fit: cover; /* Video fits nicely */
+            object-fit: cover;
         }
         .camera-overlay {
             position: absolute;
@@ -57,57 +53,109 @@
     <div id="wrapper" class="player-wrapper"></div>
 
     <script>
+        //
+        // Kiosk view: composes a grid of camera streams.
+        //
+        // URL parameters:
+        //   cams      Comma-separated list of cameras to display, in order.
+        //   refresh   Optional. Seconds between full player rebuilds.
+        //             Defaults to 300 (5 minutes) when omitted.
+        //
+        // Each entry in ?cams= may name an application explicitly with an
+        // "app:" prefix, or fall back to DEFAULT_APP when no prefix is given:
+        //
+        //   "FrontDoor"           -> DEFAULT_APP  -> hls/FrontDoor.m3u8
+        //   "cam-sub:FrontDoor"   -> cam-sub app  -> sub-hls/FrontDoor.m3u8
+        //
+        // The "app:" prefix (colon, not slash) keeps the flat stream names
+        // used by nginx-rtmp intact. See appHlsBase() below to map an
+        // application name to the URL location that serves its HLS.
+        //
+        // Example:
+        //   kiosk.html?cams=cam-sub:FrontDoor,cam-sub:SideDoor,Lobby&refresh=120
+        //
+
+        // Default application used when a cams entry has no "app:" prefix.
+        const DEFAULT_APP = 'cam';
+
         const urlParams = new URLSearchParams(window.location.search);
         const camsParam = urlParams.get('cams');
 
-        // Allow the refresh interval to be set via ?refresh=<seconds>.
-        // Falls back to 300 seconds (5 minutes) if the param is missing/invalid.
+        // Refresh interval in milliseconds. ?refresh=N is read as seconds and
+        // must be a positive number; otherwise we fall back to 300 seconds.
+        const DEFAULT_REFRESH_SECONDS = 300;
         const refreshParam = parseInt(urlParams.get('refresh'), 10);
-        const REFRESH_SECONDS = (Number.isFinite(refreshParam) && refreshParam > 0)
+        const refreshSeconds = (Number.isFinite(refreshParam) && refreshParam > 0)
             ? refreshParam
-            : 300;
-        const REFRESH_INTERVAL_MS = REFRESH_SECONDS * 1000;
+            : DEFAULT_REFRESH_SECONDS;
+        const REFRESH_INTERVAL_MS = refreshSeconds * 1000;
 
         let cameras = [];
         let playerContainers = {};
+        let refreshTimer = null;
 
-        if (camsParam) {
-            cameras = camsParam.split(',').map(cam => cam.trim()).filter(cam => cam.length > 0);
+        // Map an nginx-rtmp application name to the URL prefix that serves its
+        // HLS playlists. nginx-rtmp writes a flat <name>.m3u8 per application,
+        // and the site serves each application's hls_path under its own
+        // location. Adjust these to match your nginx "default" site if you add
+        // or rename applications.
+        function appHlsBase(app) {
+            switch (app) {
+                // High-res recording/live application -> /hls (hls_path /tmp/hls)
+                case 'cam':
+                    return 'hls';
+                // Lower-res sharing application -> /sub-hls (hls_path /tmp/sub-hls)
+                case 'cam-sub':
+                    return 'sub-hls';
+                // Fall back to /hls/<app> for any other application name.
+                default:
+                    return `hls/${app}`;
+            }
         }
 
-        // Tear down a single OvenPlayer instance and release all its resources.
-        // OvenPlayer's documented teardown method is .remove() (NOT .destroy()).
-        // Using the wrong method silently threw and left every player alive,
-        // leaking MediaSource buffers/decoders on each refresh until the
-        // machine locked up. We defensively support .remove(), and fall back
-        // to .destroy() only if a fork exposes that instead.
-        function destroyPlayer(player) {
-            try {
-                if (player && typeof player.remove === 'function') {
-                    player.remove();
-                } else if (player && typeof player.destroy === 'function') {
-                    player.destroy();
+        // Build the HLS playlist URL for a parsed camera entry.
+        function hlsUrl(cam) {
+            return `${appHlsBase(cam.app)}/${cam.name}.m3u8`;
+        }
+
+        // Parse the ?cams= list into { app, name, label } objects.
+        if (camsParam) {
+            cameras = camsParam.split(',').map(entry => {
+                entry = entry.trim();
+                if (!entry) return null;
+
+                const colonIdx = entry.indexOf(':');
+                if (colonIdx !== -1) {
+                    return {
+                        app: entry.substring(0, colonIdx),
+                        name: entry.substring(colonIdx + 1),
+                        label: entry.substring(colonIdx + 1)
+                    };
                 }
-            } catch (e) {
-                console.error('Error removing player', e);
-            }
+
+                return {
+                    app: DEFAULT_APP,
+                    name: entry,
+                    label: entry
+                };
+            }).filter(Boolean);
         }
 
         function loadCameras() {
             const wrapper = document.getElementById('wrapper');
-            wrapper.innerHTML = ''; // Clear previous DOM
+            wrapper.innerHTML = '';
 
-            cameras.forEach(name => {
+            cameras.forEach(cam => {
                 const container = document.createElement('div');
                 container.className = 'camera-container';
 
                 const playerDiv = document.createElement('div');
                 playerDiv.className = 'camera-preview';
-                playerDiv.id = `player-${name}`;
+                playerDiv.id = `player-${cam.app}-${cam.name}`;
 
                 const overlay = document.createElement('div');
                 overlay.className = 'camera-overlay';
-                overlay.innerText = name; // Show camera name overlay
+                overlay.innerText = cam.label;
 
                 container.appendChild(playerDiv);
                 container.appendChild(overlay);
@@ -118,21 +166,26 @@
                     mute: true,
                     controls: false,
                     sources: [{
-                        file: `hls/${name}.m3u8`,
-                        label: "hls",
-                        type: "hls"
+                        file: hlsUrl(cam),
+                        label: 'hls',
+                        type: 'hls'
                     }],
                 });
 
                 playerContainers[playerDiv.id] = player;
             });
 
-            updateGridLayout(); // Setup the grid
+            updateGridLayout();
         }
 
         function reloadCameras() {
-            // Properly release every existing player BEFORE creating new ones.
-            Object.values(playerContainers).forEach(destroyPlayer);
+            Object.values(playerContainers).forEach(player => {
+                try {
+                    player.destroy();
+                } catch (e) {
+                    console.error('Error destroying player', e);
+                }
+            });
             playerContainers = {};
             loadCameras();
         }
@@ -140,8 +193,10 @@
         function updateGridLayout() {
             const wrapper = document.getElementById('wrapper');
             const camCount = cameras.length;
-            let rows = Math.floor(Math.sqrt(camCount));
-            let cols = Math.ceil(camCount / rows);
+            if (camCount === 0) return;
+
+            const rows = Math.max(1, Math.floor(Math.sqrt(camCount)));
+            const cols = Math.ceil(camCount / rows);
 
             wrapper.style.gridTemplateRows = `repeat(${rows}, 1fr)`;
             wrapper.style.gridTemplateColumns = `repeat(${cols}, 1fr)`;
@@ -149,26 +204,25 @@
 
         if (cameras.length > 0) {
             loadCameras();
-            setInterval(reloadCameras, REFRESH_INTERVAL_MS);
+            refreshTimer = setInterval(reloadCameras, REFRESH_INTERVAL_MS);
         } else {
             document.getElementById('wrapper').innerHTML =
-                '<p style="text-align: center; margin-top: 50px; color: white;">No cameras specified. Please add ?cams=Cam1,Cam2 to the URL.</p>';
+                '<p style="color:white;text-align:center;margin-top:50px;">' +
+                'No cameras specified.<br>' +
+                'Usage: ?cams=CamName,app:CamName&amp;refresh=300<br>' +
+                'Examples:<br>' +
+                '&nbsp;&nbsp;?cams=FrontDoor,SideDoor<br>' +
+                '&nbsp;&nbsp;?cams=cam-sub:FrontDoor,cam-sub:Lobby&amp;refresh=120' +
+                '</p>';
         }
 
-        // Release players if the page itself is being unloaded/navigated,
-        // so a full reload doesn't leave orphaned decoders behind.
-        window.addEventListener('pagehide', () => {
-            Object.values(playerContainers).forEach(destroyPlayer);
-            playerContainers = {};
-        });
-
-        // Optional: Fullscreen on first click
+        // Fullscreen on first click.
         document.addEventListener('DOMContentLoaded', () => {
             document.body.addEventListener('click', () => {
                 document.documentElement.requestFullscreen().catch(err => {
                     console.warn('Fullscreen request failed', err);
                 });
-            }, { once: true }); // Only the first click
+            }, { once: true });
         });
     </script>
 </body>

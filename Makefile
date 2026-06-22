@@ -39,6 +39,7 @@ install: check_deps
 	[ -f $(NGINX_CONF_DIR)/nginx.conf ] && cp $(NGINX_CONF_DIR)/nginx.conf $(NGINX_CONF_DIR)/nginx.conf.backup || true
 	[ -f $(SITES_AVAILABLE)/default ] && cp $(SITES_AVAILABLE)/default $(SITES_AVAILABLE)/default.backup || true
 	[ -f $(NGINX_CONF_DIR)/cameras.conf ] && cp $(NGINX_CONF_DIR)/cameras.conf $(NGINX_CONF_DIR)/cameras.conf.backup || true
+	[ -f $(NGINX_CONF_DIR)/cameras-sub.conf ] && cp $(NGINX_CONF_DIR)/cameras-sub.conf $(NGINX_CONF_DIR)/cameras-sub.conf.backup || true
 	[ -f $(WEB_ROOT)/index.html ] && cp $(WEB_ROOT)/index.html $(WEB_ROOT)/index.html.backup || true
 
 	# Install scripts
@@ -49,6 +50,7 @@ install: check_deps
 	install -m 644 default $(SITES_AVAILABLE)/
 	ln -sfn $(SITES_AVAILABLE)/default $(SITES_ENABLED)/default
 	install -m 644 cameras.conf $(NGINX_CONF_DIR)/
+	install -m 644 cameras-sub.conf $(NGINX_CONF_DIR)/
 	install -m 644 camera-status.html $(WEB_ROOT)/
 	install -m 644 history.html $(WEB_ROOT)/
 	install -m 644 index.html $(WEB_ROOT)/
