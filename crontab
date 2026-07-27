@@ -2,6 +2,11 @@
 # Housekeeping for rtmp-nginx-viewer recordings.
 # See /etc/nginx/nginx.conf for recording configuration.
 
+# NOTE: if using helpers/mergerfs tiered storage, disable this line and set
+# RETENTION_DAYS in videos-mover.sh instead - running both means the shorter
+# retention silently wins. Never add a cleanup for /videos/thumbnails: stale
+# thumbnail mtimes are used as the down-camera artifact.
+#
 # Delete recordings older than 30 days - run nightly at 2am
 #0 2 * * *  www-data  /usr/bin/find /videos/recordings -type f -mtime +30 -delete
 
