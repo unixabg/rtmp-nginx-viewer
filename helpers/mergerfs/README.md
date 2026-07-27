@@ -235,6 +235,23 @@ cameras x bitrate(Mbps) / 8 x 86400 / 1000  GB per day
 e.g. ten cameras at 4 Mbps produce about 430 GB/day - roughly six weeks on
 a 20TB drive.
 
+**Avoid a retention collision:** the stock project crontab ships its own
+nightly purge along the lines of
+
+```
+#0 2 * * *  www-data  /usr/bin/find /videos/recordings -type f -mtime +30 -delete
+```
+
+Use one retention mechanism, not both. When enabling `RETENTION_DAYS` in
+the mover, comment out that crontab line - if both are active, the shorter
+value silently wins and footage disappears earlier than either setting
+suggests. (Consolidating into the mover is recommended: one script, one
+log, and each purged file is logged with a `purge:` line.)
+
+Never add any cleanup for `/videos/thumbnails`. The mover deliberately
+leaves thumbnails alone: a stale thumbnail whose mtime has stopped updating
+is used as the artifact showing when a camera went down.
+
 ## Troubleshooting
 
 * **`mkdir /videos/foo` only shows up on the SSD branch** - expected; the
