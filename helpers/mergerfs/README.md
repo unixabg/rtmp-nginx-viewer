@@ -20,7 +20,7 @@ work unchanged across all tiers.
 Notes on the design:
 
 * mergerfs is a union filesystem, not a cache. It will not promote or demote
-  files on its own. The included `videos-mover.sh` does the demotion on a
+  files on its own. The included `videos-mover` does the demotion on a
   cron schedule. Reads of old footage come straight off the slower tier,
   which is fine for camera playback.
 * Recordings are write-once, so the mover uses **mtime**, never atime. You
@@ -99,13 +99,13 @@ deliberately leaves them on the SSD and only migrates `recordings/`.
 
 ## 4. The mover script
 
-Copy `videos-mover.sh` from this folder somewhere permanent (`/opt` works
+Copy `videos-mover` from this folder somewhere permanent (`/opt` works
 fine) and make it root-owned and executable:
 
 ```
-cp helpers/mergerfs/videos-mover.sh /opt/videos-mover.sh
-chown root: /opt/videos-mover.sh
-chmod 755 /opt/videos-mover.sh
+cp helpers/mergerfs/videos-mover /opt/videos-mover
+chown root: /opt/videos-mover
+chmod 755 /opt/videos-mover
 ```
 
 Edit the configuration block at the top:
@@ -143,7 +143,7 @@ Dry-run it once before scheduling (on a fresh install it should find
 nothing and exit immediately):
 
 ```
-bash -x /opt/videos-mover.sh
+bash -x /opt/videos-mover
 ```
 
 ## 5. Schedule
@@ -154,7 +154,7 @@ than hidden in a personal crontab. Create `/etc/cron.d/rtmp-nginx-viewer`:
 
 ```
 # run every hour for hot cache on ssd for history
-0 * * * * root /opt/videos-mover.sh >> /var/log/videos-mover.log 2>&1
+0 * * * * root /opt/videos-mover >> /var/log/videos-mover.log 2>&1
 ```
 
 cron.d gotchas, all of which cause the job to be silently skipped:
@@ -164,7 +164,7 @@ cron.d gotchas, all of which cause the job to be silently skipped:
 * The file must be owned by root and not group/world-writable:
   `chown root: /etc/cron.d/rtmp-nginx-viewer` and `chmod 644` it.
 * On Debian, cron ignores cron.d filenames containing dots, so do not name
-  the file something like `mover.sh`.
+  the file something like `mover`.
 
 No reload is needed; cron picks up cron.d changes automatically. Verify at
 the next top of the hour:
@@ -173,7 +173,7 @@ the next top of the hour:
 grep videos-mover /var/log/syslog | tail
 ```
 
-You should see a `CRON` line with `(root) CMD (/opt/videos-mover.sh ...)`.
+You should see a `CRON` line with `(root) CMD (/opt/videos-mover ...)`.
 
 After the first `KEEP_HOURS` have elapsed, check
 `/var/log/videos-mover.log` and confirm files are appearing under
