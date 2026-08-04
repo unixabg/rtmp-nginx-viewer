@@ -12,6 +12,7 @@
 #   nvr-backup -n                   # dry run, show what would happen
 #   nvr-backup -j 8                 # 8 hosts in parallel (default 4)
 #   nvr-backup -l                   # list configured hosts and exit
+#   nvr-backup -V                   # print version and exit
 #
 # Hosts file: ~/.config/nvr-backup/hosts
 #   One host per line. Blank lines and # comments ignored.
@@ -24,6 +25,8 @@
 #   BACKUP_ROOT   where archives land   (default ~/backups/nvr)
 #   KEEP          archives kept per host (default 14)
 #   SSH_OPTS      extra ssh arguments   (default connect timeout 15s)
+
+VERSION="1.0.0"
 
 set -uo pipefail
 
@@ -59,13 +62,14 @@ ok()   { printf '%s %s%s%s\n' "$(date '+%H:%M:%S')" "$c_grn" "$*" "$c_off"; }
 warn() { printf '%s %s%s%s\n' "$(date '+%H:%M:%S')" "$c_yel" "$*" "$c_off"; }
 err()  { printf '%s %s%s%s\n' "$(date '+%H:%M:%S')" "$c_red" "$*" "$c_off" >&2; }
 
-while getopts ":j:f:nlh" opt; do
+while getopts ":j:f:nlhV" opt; do
     case "$opt" in
         j) JOBS="$OPTARG" ;;
         f) HOSTS_FILE="$OPTARG" ;;
         n) DRYRUN=1 ;;
         l) LIST_ONLY=1 ;;
         h) usage 0 ;;
+        V) echo "nvr-backup $VERSION"; exit 0 ;;
         \?) err "Unknown option -$OPTARG"; usage 1 ;;
         :)  err "Option -$OPTARG needs an argument"; usage 1 ;;
     esac
@@ -141,7 +145,7 @@ backup_host() {
 }
 
 # --- Run, bounded parallelism ---------------------------------------------
-log "Backing up ${#HOSTS[@]} host(s), ${JOBS} at a time -> $BACKUP_ROOT"
+log "nvr-backup $VERSION — backing up ${#HOSTS[@]} host(s), ${JOBS} at a time -> $BACKUP_ROOT"
 
 STATUS_DIR="$(mktemp -d)"
 trap 'rm -rf "$STATUS_DIR"' EXIT

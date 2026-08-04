@@ -33,11 +33,37 @@ To change the list, edit the `REMOTE_PATHS` array near the top of the script.
 ## Install
 
 ```bash
+make install-user     # ~/.local/bin, no sudo
+make config           # scaffold ~/.config/nvr-backup/hosts
+```
+
+Or system-wide:
+
+```bash
+sudo make install     # /usr/local/bin
+make config
+```
+
+`make install` runs `make check` first, so a syntax error can't get installed.
+`install-user` warns if the target directory isn't on your `PATH`.
+
+Other targets:
+
+| Target | Does |
+|---|---|
+| `make help` | List targets |
+| `make check` | `bash -n` plus `shellcheck` if installed |
+| `make config` | Create a commented sample hosts file (won't overwrite) |
+| `make version` | Print the version embedded in the script |
+| `make tag` | Annotated git tag from `VERSION` — refuses a dirty tree or duplicate tag |
+| `make uninstall` / `make uninstall-user` | Remove the script; config and backups are left alone |
+
+Manual install works too if you'd rather skip make:
+
+```bash
 install -m 755 nvr-backup ~/.local/bin/nvr-backup
 mkdir -p ~/.config/nvr-backup
 ```
-
-Make sure `~/.local/bin` is on your `PATH`.
 
 ### Hosts file
 
@@ -112,13 +138,14 @@ nvr-backup -j 8             # 8 hosts in parallel
 nvr-backup -n               # dry run — show what would happen
 nvr-backup -l               # list configured hosts and exit
 nvr-backup -f other-hosts   # use a different hosts file
+nvr-backup -V               # print version and exit
 nvr-backup -h               # help
 ```
 
 Output:
 
 ```
-11:05:08 Backing up 8 host(s), 4 at a time -> /home/youruser/backups/nvr
+11:05:08 nvr-backup 1.0.0 — backing up 8 host(s), 4 at a time -> /home/youruser/backups/nvr
 11:05:12 OK   your-server1 — 88K -> /home/youruser/backups/nvr/your-server1/your-server1-20260803-110508.tar.gz
 11:05:12 OK   your-server2 — 91K -> /home/youruser/backups/nvr/your-server2/your-server2-20260803-110508.tar.gz
 ...
@@ -231,6 +258,25 @@ silently. Run `ssh host 'ls -la /etc/nginx'` to confirm.
 **Hangs on one host**
 Lower `ConnectTimeout` in `SSH_OPTS`, or run with `-j 1` to see which host
 stalls.
+
+---
+
+## Versioning
+
+The version lives in one place — the `VERSION` variable at the top of
+`nvr-backup`. `make version` reads it back, and `nvr-backup -V` reports it from
+whatever copy is actually installed, which is what you want when someone pastes
+output into an issue.
+
+Releases are git tags. Bump `VERSION`, commit, then:
+
+```bash
+make tag                    # creates v<VERSION>, refuses if the tree is dirty
+git push origin v1.0.0
+```
+
+The version also appears in the run header line, so scheduled-backup logs
+record which version produced them.
 
 ---
 
