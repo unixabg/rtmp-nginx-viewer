@@ -72,9 +72,8 @@ Why these options:
 Mount everything:
 
 ```
-mkdir -p /mnt/hdd/videos
-mount /mnt/hdd
-mount /videos
+mount /mnt/hdd && mkdir -p /mnt/hdd/videos && mount /videos \
+  && echo "All mounted OK" || echo "Mount failed — check dmesg and /etc/fstab"
 ```
 
 ## 3. Directories and permissions
