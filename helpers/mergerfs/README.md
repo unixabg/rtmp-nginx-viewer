@@ -117,6 +117,7 @@ Edit the configuration block at the top:
 | `NFS`            | empty   | optional archive branch path, empty disables stage 3           |
 | `ARCHIVE_DAYS`   | `30`    | days on the HDD before footage moves to the NFS archive        |
 | `RETENTION_DAYS` | empty   | days on the final tier before deletion, empty disables purging |
+| `LOCKFILE`       | `/run/videos-mover.lock` | single-instance lock, empty disables locking |
 
 How the stages interact: in normal operation `KEEP_HOURS` governs and
 footage moves down after 48 hours. If the cameras outpace the SSD,
@@ -128,6 +129,16 @@ floor on any reasonably sized SSD).
 
 Safety properties worth knowing:
 
+* **Only one mover runs at a time.** The script re-runs itself under
+  `flock -n`, so if a pass is still working through a backlog when cron
+  fires again, the new run logs a line and exits 0 instead of starting a
+  second mover against disks that are already saturated. This matters most
+  on the first run after enabling the tiering, and any time a large
+  eviction or archive stage overruns the hour. Exit code 0 on a skip keeps
+  cron from mailing you about it.
+* If a branch directory is missing - usually a failed mount leaving
+  mergerfs on a degraded pool - the mover logs an error and exits 1 rather
+  than migrating recordings onto the root filesystem.
 * Files modified in the last 10 minutes are never touched, so an
   in-progress nginx-rtmp recording cannot be moved out from under the
   worker.
@@ -262,6 +273,16 @@ is used as the artifact showing when a camera went down.
   root does), and see the NFS ownership note above for the archive tier.
 * **Which drive is a file actually on?** - `getfattr -n user.mergerfs.relpath`
   works, or simply `ls /mnt/*/videos/recordings/ | grep <file>`.
+* **Log shows "another videos-mover is still running"** - a previous run
+  overran the cron interval. Occasional lines are normal after enabling
+  tiering or during a big archive pass. Continuous lines mean the mover
+  can never finish in an hour: check whether the HDD is the bottleneck
+  (`iostat -x 5`), lower `FILL_LIMIT` so evictions are smaller and more
+  frequent, or move the archive stage to its own nightly schedule.
+* **Mover never runs, no log output at all** - a stale lock cannot cause
+  this (`flock` releases on process exit, including a kill or reboot), so
+  look at cron first. To confirm nothing holds the lock:
+  `flock -n /run/videos-mover.lock true && echo free`.
 * **USB-attached branch drives** - work fine, but use UASP-capable
   enclosures, mount by UUID, keep `nofail`, and avoid hubs. Prefer SATA for
   the always-recording tiers and keep USB for the cold end.

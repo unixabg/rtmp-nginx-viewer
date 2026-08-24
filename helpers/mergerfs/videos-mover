@@ -28,14 +28,54 @@ ARCHIVE_DAYS=30
 # Applies to NFS when set, otherwise to the HDD. Empty disables purging.
 RETENTION_DAYS=
 
+# Lock file. Prevents overlapping runs when a pass takes longer than the
+# cron interval. Set to empty to disable locking (not recommended).
+LOCKFILE=/run/videos-mover.lock
+
 ### --- End configuration ---------------------------------------------------
 
 set -u
 
+log() { echo "$(date '+%F %T') $*"; }
+
+# --- Single-instance lock ---------------------------------------------------
+# Re-run ourselves under flock so only one copy works at a time. If a previous
+# run is still grinding through a backlog, this one exits quietly rather than
+# piling a second mover onto disks that are already busy.
+#
+# flock -E 99 makes "could not acquire the lock" report exit code 99, which
+# can't be confused with a real failure from the script itself.
+if [ -n "$LOCKFILE" ] && [ -z "${VIDEOS_MOVER_LOCKED:-}" ]; then
+    if command -v flock >/dev/null 2>&1; then
+        export VIDEOS_MOVER_LOCKED=1
+        flock -n -E 99 "$LOCKFILE" "$0" "$@"
+        rc=$?
+        if [ "$rc" -eq 99 ]; then
+            log "another videos-mover is still running, skipping this run"
+            exit 0
+        fi
+        exit "$rc"
+    fi
+    log "WARNING: flock not found, running without a lock"
+fi
+
 SRC="$SSD/recordings"
 DST="$HDD/recordings"
 
-log() { echo "$(date '+%F %T') $*"; }
+# Bail out clearly if a branch is missing - usually means a mount failed and
+# mergerfs is running on a degraded pool. Moving files in that state would
+# scatter recordings onto the root filesystem.
+for d in "$SRC" "$DST"; do
+    if [ ! -d "$d" ]; then
+        log "ERROR: $d does not exist - is the branch mounted? aborting"
+        exit 1
+    fi
+done
+
+# SSD usage percent, or empty if df fails.
+ssd_pcent() {
+    df --output=pcent "$SSD" 2>/dev/null | tail -1 | tr -dc '0-9'
+}
 
 move_file() {
     # $1 = relative path, $2 = source root, $3 = dest root
@@ -52,7 +92,7 @@ find "$SRC" -type f -mmin +$((KEEP_HOURS * 60)) -printf '%P\n' | while read -r f
 done
 
 # --- Stage 2: pressure eviction, oldest first ------------------------------
-while [ "$(df --output=pcent "$SSD" | tail -1 | tr -dc '0-9')" -gt "$FILL_LIMIT" ]; do
+while p=$(ssd_pcent); [ -n "$p" ] && [ "$p" -gt "$FILL_LIMIT" ]; do
     f=$(find "$SRC" -type f -mmin +10 -printf '%T@ %P\n' | sort -n | head -1 | cut -d' ' -f2-)
     [ -z "$f" ] && break
     log "pressure-move: $f"
