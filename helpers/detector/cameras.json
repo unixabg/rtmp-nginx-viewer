@@ -1,0 +1,59 @@
+{
+  "_comment": [
+    "Per-camera detection rules. The worker matches a recording's FILENAME",
+    "against each rule's glob pattern, in order, and uses the FIRST match.",
+    "'default' applies to anything that matches no rule.",
+    "",
+    "Because rules are evaluated top-down, put specific patterns above",
+    "general ones (Camera32-* before Camera3*).",
+    "",
+    "Per-rule keys (all optional except 'classes'):",
+    "  classes    - list of COCO class names to keep. [] means skip the file",
+    "               entirely (useful for cameras you don't want analyzed).",
+    "  conf       - confidence threshold override (default 0.45). Raise for",
+    "               busy scenes with false positives, lower to catch more.",
+    "  min_area   - motion-gate threshold in px^2 (default 1500). Raise for",
+    "               outdoor cameras where trees/rain trigger constant motion.",
+    "  interval   - seconds between sampled frames (default 2.0). Lower for",
+    "               cameras watching fast movement (driveways, doors).",
+    "",
+    "Useful COCO classes: person, bicycle, car, motorcycle, bus, truck,",
+    "cat, dog, bird, backpack, handbag, suitcase.",
+    "",
+    "Edit freely - it's re-read on every worker invocation, so changes take",
+    "effect on the next file processed. No restart needed."
+  ],
+
+  "rules": [
+    {
+      "pattern": "Camera1-*",
+      "note": "front door - want packages too",
+      "classes": ["person", "backpack", "suitcase"],
+      "interval": 1.0
+    },
+    {
+      "pattern": "Camera3?-*",
+      "note": "indoor cameras 30-39 - people only",
+      "classes": ["person"]
+    },
+    {
+      "pattern": "*-parking-*",
+      "note": "lot cameras - vehicles and people, less twitchy",
+      "classes": ["person", "car", "truck", "bus", "motorcycle"],
+      "min_area": 4000
+    },
+    {
+      "pattern": "CameraTest-*",
+      "note": "example: skip this camera entirely",
+      "classes": []
+    }
+  ],
+
+  "default": {
+    "note": "outdoor default",
+    "classes": ["person", "car", "truck", "bicycle", "motorcycle", "bus", "dog"],
+    "conf": 0.45,
+    "min_area": 1500,
+    "interval": 2.0
+  }
+}

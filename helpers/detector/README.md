@@ -1,0 +1,497 @@
+# Object Detection over Recorded Files (NFS + GNU Parallel)
+
+This describes an **optional, fully decoupled** object-detection add-on for
+rtmp-nginx-viewer. It reads the recordings over a **read-only NFS mount**,
+hunts through them for objects (person, car, etc.), and writes a folder of
+detection events that a viewer page can browse like the history page.
+
+Nothing here touches the recording or streaming path. If the detection box is
+slow, off, or broken, **24/7 recording is unaffected** — the detector is just a
+read-only consumer of files. That decoupling is the whole point.
+
+## Architecture
+
+```
+  rtmp-nginx-viewer box                 detection box(es) / cluster
+  ┌─────────────────────┐               ┌──────────────────────────┐
+  │ nginx-rtmp records   │   NFS (ro)    │ mount recordings read-only│
+  │ /videos/recordings   │ ────────────► │ GNU Parallel fans files   │
+  │                      │               │ detect_worker.py per file │
+  │ serves /detections ◄─┼───────────────┤ writes manifests+thumbs   │
+  └─────────────────────┘   (rw output)  └──────────────────────────┘
+```
+
+The detector emits, per source video, a small JSON manifest plus optional
+annotated thumbnails. The output lives in a **separate** writable location
+(local disk or its own share), which the viewer box serves at `/detections`.
+
+## Quickstart (Makefile)
+
+The `Makefile` wraps everything below. `make help` lists targets and prints
+the paths it will use.
+
+```
+make help                       # targets + current settings
+make install                    # apt deps, venv, python packages, scripts
+make model                      # fast CPU export (ACCEL=ncnn on ARM)
+make doctor                     # verify install, mounts, permissions
+make test                       # run the worker on one real recording
+```
+
+Detection box (defaults assume the NFS layout) versus viewer/NVR box
+(`PROFILE=viewer` switches to `/videos/...` and keeps the throttling):
+
+```
+make install                                   # detection box
+make install PROFILE=viewer                    # viewer box
+make install GPU=1                             # CUDA wheels instead of CPU
+```
+
+Running:
+
+```
+make dry-run PROFILE=viewer CAMERA='Camera3?' FROM=2026-09-06
+make run     PROFILE=viewer CAMERA=Camera32 FROM=2026-09-05 TO=2026-09-06
+make run     PROFILE=viewer CAMERA=Camera32 FORCE=1
+make status                                    # progress and disk use
+make prune                                     # apply retention now
+make install-cron PROFILE=viewer               # 10-min sweep + nightly prune
+```
+
+Removal:
+
+```
+make uninstall     # scripts + venv; keeps cameras.json and all detections
+make purge         # also deletes the detections tree (prompts first)
+```
+
+Useful variables: `PREFIX` (default `/opt/detection`), `RECORDINGS`,
+`DETECTIONS`, `JOBS`, `GPU`, `ACCEL`, `DETECT_MODEL`, `NICE`. `make install`
+never overwrites an existing `cameras.json`, and `make upgrade` refreshes
+scripts and Python packages while leaving your config and detections alone.
+
+The sections below document what those targets do, and are also the manual
+path if you'd rather not use make.
+
+## 1. Export the recordings over NFS (read-only)
+
+On the rtmp-nginx-viewer box, export the recordings directory read-only to the
+detection box(es). Edit `/etc/exports`:
+
+```
+# /etc/exports — read-only export of recordings to the detection network
+/videos/recordings   10.0.0.0/24(ro,no_subtree_check,all_squash)
+```
+
+`ro` enforces read-only at the server, so even a misbehaving client cannot
+write into the recording tree. Then:
+
+```
+sudo exportfs -ra
+sudo systemctl enable --now nfs-server
+```
+
+On each detection node, mount it read-only at the **same path on every node**
+(GNU Parallel relies on the path being identical across the cluster):
+
+```
+sudo mkdir -p /mnt/recordings
+sudo mount -t nfs -o ro,soft,timeo=30 viewer-box:/videos/recordings /mnt/recordings
+```
+
+For a permanent mount, add to `/etc/fstab` on each node:
+
+```
+viewer-box:/videos/recordings  /mnt/recordings  nfs  ro,soft,timeo=30,_netdev  0  0
+```
+
+> Use `soft` so a node doesn't hang forever if the NFS server blips; the worker
+> will just fail that file and move on. Keep the output directory
+> (`/var/detections`) on a **different** mount that is writable and
+> viewer-readable.
+
+## 2. Install the worker on each detection node
+
+Use a dedicated virtualenv rather than system pip — modern Debian/Ubuntu
+marks system Python as externally managed (pip refuses or needs
+`--break-system-packages`), and a venv keeps the ultralytics/opencv stack
+pinned and isolated from distro upgrades. Same layout on every node:
+
+```
+sudo apt install python3-venv parallel
+sudo mkdir -p /opt/detection /var/detections
+sudo cp detect_worker.py run_detection.sh prune_detections.sh /opt/detection/
+sudo chmod +x /opt/detection/*.sh
+sudo python3 -m venv /opt/detection/venv
+
+# Default: CPU-only wheels (~250 MB). Correct for any node without an
+# NVIDIA card, and the CPU-format export below (NCNN/OpenVINO) is the real CPU speedup anyway.
+sudo mkdir -p /var/tmp/pip
+sudo TMPDIR=/var/tmp/pip /opt/detection/venv/bin/pip install --no-cache-dir \
+    torch torchvision --index-url https://download.pytorch.org/whl/cpu
+sudo TMPDIR=/var/tmp/pip /opt/detection/venv/bin/pip install --no-cache-dir \
+    ultralytics opencv-python-headless
+sudo rm -rf /var/tmp/pip
+```
+
+> **Why the TMPDIR:** on most distros `/tmp` is a RAM-backed tmpfs capped
+> well under 2 GB, and pip unpacks wheels there. The CPU wheel set fits;
+> the CUDA wheel set (below) emphatically does not — cudnn alone is 550 MB
+> — and fails with `OSError: [Errno 28] No space left on device` even when
+> the disk has plenty of room. `/var/tmp` is on disk by convention.
+
+**NVIDIA node instead?** Replace the two `pip install` lines with one
+(keeping the TMPDIR), which pulls the default CUDA-enabled wheels (~2.5 GB):
+
+```
+sudo TMPDIR=/var/tmp/pip /opt/detection/venv/bin/pip install --no-cache-dir \
+    ultralytics opencv-python-headless
+```
+
+No `source .../activate` is ever needed: `run_detection.sh` automatically
+uses `/opt/detection/venv/bin/python3` when it exists (falling back to
+system `python3` otherwise), which also means cron jobs — which activate
+nothing — get the right interpreter for free. To upgrade later:
+`sudo /opt/detection/venv/bin/pip install -U ultralytics`.
+
+### GPU or CPU: same code, auto-detected
+
+The worker never specifies a device. At inference time Ultralytics uses an
+NVIDIA GPU if PyTorch can see one (CUDA), and falls back to CPU otherwise —
+no flags, no code changes, and a mixed cluster of GPU and CPU nodes just
+works. Video decode is CPU (OpenCV/ffmpeg) in both cases by design.
+
+Per-node choices that follow from this:
+
+* **CPU-only node:** the default install above already uses the slim CPU
+  wheels. Do the export below (NCNN for ARM, OpenVINO for Intel); it's the big CPU speedup.
+* **NVIDIA node:** use the CUDA install variant above and **skip the NCNN
+  export** — NCNN inference is CPU-only, so pointing `DETECT_MODEL` at it
+  would leave the GPU idle. Keep the default `.pt` model. Verify with:
+  `/opt/detection/venv/bin/python3 -c "import torch; print(torch.cuda.is_available())"`
+
+Since `DETECT_MODEL` is an environment variable set per node, GPU nodes run
+the `.pt` while CPU nodes run their exported format, side by side in one cluster.
+
+CPU throughput tip (measured on a Raspberry Pi 5): YOLO11n was ~400 ms per
+inference in PyTorch but ~80 ms exported to NCNN — model format matters more
+than raw hardware. Pick the export for your CPU family:
+
+* **ARM (Pi, ARM SBCs):** NCNN. Install its exporter deps explicitly first —
+  the auto-installer is unreliable under sudo:
+
+  ```
+  sudo TMPDIR=/var/tmp/pip /opt/detection/venv/bin/pip install --no-cache-dir ncnn pnnx
+  cd /opt/detection && sudo ./venv/bin/yolo export model=yolo11n.pt format=ncnn
+  export DETECT_MODEL=/opt/detection/yolo11n_ncnn_model
+  ```
+
+* **Intel (Celeron/Core/Xeon):** OpenVINO usually wins on Intel silicon:
+
+  ```
+  sudo TMPDIR=/var/tmp/pip /opt/detection/venv/bin/pip install --no-cache-dir openvino
+  cd /opt/detection && sudo ./venv/bin/yolo export model=yolo11n.pt format=openvino
+  export DETECT_MODEL=/opt/detection/yolo11n_openvino_model
+  ```
+
+The worker auto-detects the format from the directory `DETECT_MODEL` points
+at, so mixed nodes can each use their best format. When in doubt, export
+both and compare a run's `wall_time_sec`. (Ignore any per-layer "Could not
+initialize NNPACK" warnings during export — PyTorch falls back cleanly on
+CPUs without those instructions.)
+
+## 2b. Per-camera detection rules (cameras.json)
+
+Different cameras want different objects: an indoor camera only cares about
+people, a parking lot wants people and vehicles, and a tree-lined driveway
+needs a less twitchy motion gate. `cameras.json` (kept next to
+`detect_worker.py`, or set `CAMERA_RULES=/path/to/file.json`) maps camera
+name patterns to those settings.
+
+Rules match with shell globs against the recording's **filename**, which is
+where nginx-rtmp puts the camera name
+(`Camera32-1788648910-20260905-175510.mp4`). The **first matching rule
+wins**, so list specific patterns above general ones:
+
+```json
+{
+  "rules": [
+    { "pattern": "Camera1-*",  "note": "front door",
+      "classes": ["person", "backpack", "suitcase"], "interval": 1.0 },
+    { "pattern": "Camera3?-*", "note": "indoor 30-39",
+      "classes": ["person"] },
+    { "pattern": "*-parking-*", "note": "lot",
+      "classes": ["person", "car", "truck", "bus"], "min_area": 4000 },
+    { "pattern": "CameraTest-*", "note": "skip entirely", "classes": [] }
+  ],
+  "default": {
+    "classes": ["person", "car", "truck", "bicycle", "motorcycle", "bus", "dog"],
+    "conf": 0.45, "min_area": 1500, "interval": 2.0
+  }
+}
+```
+
+Per-rule keys (only `classes` is required; the rest inherit from `default`):
+
+| key | meaning |
+|---|---|
+| `classes` | COCO class names to keep. `[]` skips the camera entirely. |
+| `conf` | confidence threshold; raise it if a scene throws false positives |
+| `min_area` | motion-gate px²; raise for cameras with trees/rain/traffic |
+| `interval` | seconds between sampled frames; lower for doors and driveways |
+
+Useful COCO classes: `person`, `bicycle`, `car`, `motorcycle`, `bus`,
+`truck`, `cat`, `dog`, `bird`, `backpack`, `handbag`, `suitcase`.
+
+Notes:
+
+* **Narrower class lists are faster** — the model runs the same, but a
+  tighter `min_area` or longer `interval` on a busy camera is the real
+  saving, since the motion gate is what decides how often the model runs.
+* The file is **re-read per file processed**, so edits take effect on the
+  next recording; nothing to restart. A missing or malformed file falls
+  back to built-in defaults with a warning rather than failing the run.
+* `classes: []` still writes a stub manifest so the file counts as done and
+  isn't retried on every pass.
+* Each manifest records the rule that was applied under `worker.rule`, so
+  you can tell later why a given file was analyzed the way it was.
+* Changing a rule does **not** reprocess already-done files (they have
+  manifests). To re-run a camera under new rules, delete its manifests:
+  `find /videos/detections -name 'Camera32-*.json' -delete`
+
+## 3. Run it
+
+Single box, all cores:
+
+```
+/opt/detection/run_detection.sh
+```
+
+### Targeted runs: one camera, one time range
+
+Instead of sweeping everything, ask for a specific camera and/or window.
+Selection uses the timestamp **in the filename** (`...-YYYYMMDD-HHMMSS.mp4`),
+which is authoritative — mtime drifts if files are ever copied or touched.
+
+```
+# everything from one camera
+./run_detection.sh --camera Camera32
+
+# one camera, one full day  (--to is exclusive, so this is exactly Sep 5)
+./run_detection.sh --camera Camera32 --from 2026-09-05 --to 2026-09-06
+
+# an incident window, all cameras
+./run_detection.sh --from '2026-09-05 17:00' --to '2026-09-05 18:30'
+
+# preview the selection without processing anything
+./run_detection.sh --camera 'Camera3?' --from 2026-09-01 --dry-run
+```
+
+| flag | meaning |
+|---|---|
+| `--camera` | glob against the filename. A bare name is anchored (`Camera32` → `Camera32-*`) so it can't also match `Camera320`. Pass a glob (`'Camera3?'`) for ranges. |
+| `--from` | inclusive lower bound: `YYYY-MM-DD` or `'YYYY-MM-DD HH:MM[:SS]'` |
+| `--to` | **exclusive** upper bound, so `--from 2026-09-05 --to 2026-09-06` is one clean day |
+| `--force` | reprocess files that already have manifests — deletes them (and their thumbnails) first, scoped to the selection only |
+| `--dry-run` | print the file list and exit |
+
+Notes:
+
+* Default behavior is unchanged and still resumable: without `--force`,
+  files that already have manifests are skipped, so re-running a range is
+  cheap and safe.
+* `--force` is what you want after editing a camera's entry in
+  `cameras.json` — it re-runs just that camera under the new rules.
+* Files whose names carry no parseable timestamp are kept when no range is
+  requested and skipped (with a count) when one is; they can't be placed in
+  time.
+* Targeted runs share the joblog and honor `JOBS`, `DETECT_MODEL`, and the
+  rest of the environment overrides exactly like a full sweep.
+
+Cluster: list nodes in an `--sshloginfile` (jobs-per-node/hostname):
+
+```
+# /etc/detection/nodes.txt
+8/:            # ":" = the local machine, 8 jobs
+4/gpu-box      # 4 jobs on gpu-box
+4/pi-node-1
+```
+
+```
+/opt/detection/run_detection.sh --nodes /etc/detection/nodes.txt
+```
+
+Every node needs the identical `/mnt/recordings` mount and `/opt/detection`
+path; no file transfer happens because each node reads inputs straight off
+the shared read-only mount.
+
+Resumability: files already having a manifest are skipped; files newer than
+~2 minutes are excluded (the recorder may still hold them); GNU Parallel's
+`--joblog --resume-failed` re-runs only failures after an interruption.
+Schedule it from cron under `flock` so runs never overlap:
+
+```
+*/10 * * * *  detector  flock -n /run/lock/detect.lock \
+    /opt/detection/run_detection.sh >> /var/log/detection/run.log 2>&1
+```
+
+## 4. Serve /detections from the viewer box
+
+Export `/var/detections` from the detection box (or write output directly to
+a share the viewer box hosts) and add a location block on the viewer:
+
+```nginx
+location /detections/ {
+    alias /videos/detections/;
+    autoindex on;               # or point a small JS page at the manifests
+}
+```
+
+Each manifest is `<camera>/<file>.mp4.json` with per-event timestamps, so a
+history-style page can deep-link into the corresponding recording at the
+event offset.
+
+## 5. Retention for detections
+
+`prune_detections.sh` (nightly cron) applies a two-tier policy: thumbnails
+are removed after `THUMB_DAYS` (default 30, matching recording retention);
+tiny JSON manifests are kept `MANIFEST_DAYS` (default 90) so you keep a
+searchable "person on cam03 at 14:05" index even after the video is gone.
+Orphaned manifests whose source video has been recycled are also cleaned up.
+
+## 6. Latency characteristic
+
+This pipeline is **post-hoc** by design: detection sees only files the
+recorder has closed, so an event becomes browsable one segment length plus
+queue time after it happens — with 5-minute segments and a 10-minute cron,
+typically 5–15 minutes. The only sources are rtmp-nginx-viewer recordings;
+nothing subscribes to live camera streams. To shrink the latency, shorten
+the segment length in nginx and tighten the cron interval — the trade-off is
+more, smaller files (more `exec_record_done` firings, more worker forks),
+not more bandwidth.
+
+## Examples / cookbook
+
+Real invocations, copy-paste ready. Environment variables set the paths and
+throttling; flags set the selection.
+
+### On the viewer/NVR box (local files, throttled behind nginx)
+
+Everything here overrides the NFS defaults and runs at low priority so
+recording always wins. Always start with `--dry-run` to check the selection.
+
+```
+# preview: cameras 30-39, from Sep 6 onward
+RECORDINGS=/videos/recordings DETECTIONS=/videos/detections \
+JOBLOG=/videos/detections/.joblog JOBS=2 \
+DETECT_MODEL=/opt/detection/yolo11n_openvino_model \
+nice -n 15 ionice -c3 /opt/detection/run_detection.sh \
+  --camera 'Camera3?' --from 2026-09-06 --dry-run
+
+# same thing for real (drop --dry-run)
+RECORDINGS=/videos/recordings DETECTIONS=/videos/detections \
+JOBLOG=/videos/detections/.joblog JOBS=2 \
+DETECT_MODEL=/opt/detection/yolo11n_openvino_model \
+nice -n 15 ionice -c3 /opt/detection/run_detection.sh \
+  --camera 'Camera3?' --from 2026-09-06
+```
+
+Rather than retype that, drop the environment into a wrapper:
+
+```bash
+# /opt/detection/env-viewer.sh   (chmod +x)
+export RECORDINGS=/videos/recordings
+export DETECTIONS=/videos/detections
+export JOBLOG=/videos/detections/.joblog
+export JOBS=2
+export DETECT_MODEL=/opt/detection/yolo11n_openvino_model
+exec nice -n 15 ionice -c3 /opt/detection/run_detection.sh "$@"
+```
+
+```
+/opt/detection/env-viewer.sh --camera 'Camera3?' --from 2026-09-06
+```
+
+`"$@"` passes flags straight through, so every example below works with the
+wrapper too. The detection box gets its own wrapper with the NFS paths and a
+higher `JOBS`; the commands you type stay the same.
+
+### Common selections
+
+```
+# one file, by hand - the smoke test
+/opt/detection/venv/bin/python3 /opt/detection/detect_worker.py \
+  --input /videos/recordings/Camera32-1788648910-20260905-175510.mp4 \
+  --input-root /videos/recordings --output-root /tmp/detect-test
+
+# everything from one camera, all history
+./run_detection.sh --camera Camera32
+
+# one camera, exactly one day (--to is exclusive)
+./run_detection.sh --camera Camera32 --from 2026-09-05 --to 2026-09-06
+
+# incident window across every camera
+./run_detection.sh --from '2026-09-05 17:00' --to '2026-09-05 18:30'
+
+# a numeric block of cameras since a date
+./run_detection.sh --camera 'Camera1[0-9]' --from 2026-09-01
+
+# re-run one camera after editing its rules in cameras.json
+./run_detection.sh --camera Camera32 --force
+
+# re-run just one day of one camera under new rules
+./run_detection.sh --camera Camera32 --from 2026-09-05 --to 2026-09-06 --force
+
+# full sweep, everything not yet processed
+./run_detection.sh
+```
+
+`--dry-run` costs nothing (it is a `find` plus a filter, no decoding), so
+run it freely against the whole tree to see what a selection covers.
+
+### Checking on a run
+
+```
+# progress
+find /videos/detections -name '*.json' | wc -l
+tail -f /videos/detections/.joblog
+
+# which files actually had detections, newest first
+grep -l '"event_count": [1-9]' -r /videos/detections --include='*.json' | tail -20
+
+# what did one file find?
+python3 -m json.tool /videos/detections/Camera32-1788648910-20260905-175510.mp4.json
+
+# every manifest mentioning a person on Sep 5
+grep -l '"person"' /videos/detections/*-20260905-*.json
+```
+
+### Stopping and resuming
+
+```
+kill %1                       # backgrounded run: parallel finishes in-flight files
+pkill -f run_detection.sh     # if the shell is gone
+pgrep -af 'detect_worker|run_detection'   # empty output = stopped
+```
+
+Nothing is lost — completed manifests stay on disk and re-running the same
+command skips them, so long backfills can be run in whatever slices suit
+you. Use `tmux` or `screen` for anything expected to run for hours.
+
+### Housekeeping
+
+```
+# nightly prune, viewer-box paths
+DETECTIONS=/videos/detections RECORDINGS=/videos/recordings \
+  /opt/detection/prune_detections.sh
+
+# clear manifests for one camera so the next run redoes it
+find /videos/detections -name 'Camera32-*.json' -delete
+```
+
+## Sizing reference (55 cameras, 2 Mbps, 5-min segments)
+
+~660 files/hour, ~75 MB each → ~14 GB/h to keep pace. With 2-second frame
+sampling and the motion gate, decode dominates, not inference; a single
+midrange box (or one GPU node) keeps up with headroom, and gigabit NFS is
+nowhere near saturated. Add nodes by adding lines to `nodes.txt`.
