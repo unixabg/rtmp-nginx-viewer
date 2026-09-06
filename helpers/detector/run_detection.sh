@@ -27,7 +27,7 @@
 # Resumable by construction:
 #   * worker skips files whose manifest already exists
 #   * worker skips files newer than MIN_FILE_AGE_SEC (recorder may hold them)
-#   * --joblog + --resume-failed lets a killed run pick up where it left off
+#   * a killed run is simply re-run; done files are skipped by the worker
 #
 # Run from cron on the detection box, e.g. every 10 minutes:
 #   */10 * * * *  detector  flock -n /run/lock/detect.lock \
@@ -152,7 +152,12 @@ if [[ $DRYRUN -eq 1 ]]; then
   exit 0
 fi
 
-PAR=(parallel --jobs "$JOBS" --joblog "$JOBLOG" --resume-failed --line-buffer)
+# Resumability comes from the WORKER (it skips files that already have a
+# manifest), not from the joblog. Parallel's --resume-failed would key on the
+# command string instead, silently skipping any file it had run before - which
+# also defeats --force, since clearing manifests wouldn't change the joblog.
+# '+' opens the joblog in append mode so history accumulates across runs.
+PAR=(parallel --jobs "$JOBS" --joblog "+$JOBLOG" --line-buffer)
 if [[ -n "$SSHLOGINFILE" ]]; then
   # Same paths on every node (identical NFS mount + repo path) means no file
   # transfer is needed: each node reads its input straight off the ro mount.
