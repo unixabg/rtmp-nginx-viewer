@@ -224,7 +224,7 @@ install-cron:
 	@printf '%s\n' \
 	  'SHELL=/bin/bash' \
 	  'PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin' \
-	  '*/10 * * * * $(shell whoami) flock -n /tmp/detect.lock env $(RUNENV) $(NICE) $(RUNNER) >> /var/log/detection.log 2>&1' \
+	  '*/10 * * * * $(shell whoami) flock -n /tmp/detect.lock env $(RUNENV) $(NICE) $(RUNNER) >> /var/log/detection.log 2>&1 && $(PY) $(PREFIX)/build_index.py --detections $(DETECTIONS) >> /var/log/detection.log 2>&1' \
 	  '30 2 * * * $(shell whoami) DETECTIONS=$(DETECTIONS) RECORDINGS=$(RECORDINGS) $(PREFIX)/prune_detections.sh >> /var/log/detection.log 2>&1' \
 	  | sudo tee /etc/cron.d/detection >/dev/null
 	sudo chmod 644 /etc/cron.d/detection
