@@ -53,8 +53,9 @@ WEBPAGE     := detections.html
 CONFIG      := cameras.json
 
 .PHONY: help install install-deps install-scripts install-config model \
-        upgrade upgrade-scripts upgrade-deps uninstall purge doctor status \
-        run dry-run prune install-cron uninstall-cron test clean
+        upgrade upgrade-scripts upgrade-deps upgrade-web uninstall purge \
+        doctor status run dry-run prune index web classes bench \
+        install-cron uninstall-cron test clean
 
 ## help: show this list
 help:
@@ -129,8 +130,9 @@ endif
 	@echo "  DETECT_MODEL=$(PREFIX)/$(basename $(MODEL))_$(ACCEL)_model"
 endif
 
-## upgrade: refresh scripts and Python packages in place (config untouched)
-upgrade: upgrade-scripts upgrade-deps
+## upgrade: refresh scripts, page and Python packages in place (config kept)
+upgrade: upgrade-scripts upgrade-deps upgrade-web
+	@echo
 	@echo "upgrade complete — run 'make doctor' to verify."
 
 ## upgrade-scripts: copy newer scripts over the installed ones
@@ -142,12 +144,31 @@ upgrade-scripts:
 	@diff -q $(CONFIG) $(PREFIX)/$(CONFIG) >/dev/null 2>&1 \
 	    && echo "    (identical)" || echo "    (differs — expected if you customized it)"
 
+## upgrade-web: refresh the browse page if it is already installed
+upgrade-web:
+	@if [ -e $(DETECTIONS)/$(WEBPAGE) ]; then \
+	    echo "==> refreshing $(DETECTIONS)/$(WEBPAGE)"; \
+	    sudo cp $(WEBPAGE) $(DETECTIONS)/; \
+	    $(PY) $(PREFIX)/build_index.py --detections $(DETECTIONS) || true; \
+	else \
+	    echo "==> browse page not installed here; 'make web' to add it"; \
+	fi
+
 ## upgrade-deps: pull newer ultralytics/opencv into the venv
 upgrade-deps:
 	@echo "==> upgrading Python packages"
 	sudo mkdir -p $(TMPDIR_PIP)
+ifeq ($(GPU),1)
 	sudo TMPDIR=$(TMPDIR_PIP) $(PIP) install --no-cache-dir -U \
 	    ultralytics opencv-python-headless
+else
+	@echo "    (GPU=0: keeping torch on the CPU index so an upgrade can't"
+	@echo "     silently pull ~2.5 GB of CUDA wheels onto a CPU-only box)"
+	sudo TMPDIR=$(TMPDIR_PIP) $(PIP) install --no-cache-dir -U \
+	    torch torchvision --index-url https://download.pytorch.org/whl/cpu
+	sudo TMPDIR=$(TMPDIR_PIP) $(PIP) install --no-cache-dir -U \
+	    ultralytics opencv-python-headless
+endif
 	sudo rm -rf $(TMPDIR_PIP)
 
 ## doctor: check install, mounts, model, and permissions
