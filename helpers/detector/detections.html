@@ -53,14 +53,14 @@
 @layer layout {
   :root{--sheet-gap:2px}
   *{box-sizing:border-box}
-  html,body{margin:0; height:100%}
+  html,body{margin:0}
   body{
-    display:grid; grid-template-rows:auto 1fr; height:100vh; overflow:hidden;
     font-variant-numeric:tabular-nums;
   }
 
   /* ---- header + filters ---- */
   header{
+    position:sticky; top:0; z-index:20;
     display:flex; align-items:baseline; gap:1.25rem; flex-wrap:wrap;
     padding:.85rem 1.1rem; border-bottom:1px solid var(--line);
   }
@@ -72,8 +72,16 @@
   :focus-visible{outline:2px solid var(--vehicle); outline-offset:2px}
 
   /* ---- frame ---- */
-  main{display:grid; grid-template-columns:9.5rem 1fr; min-height:0}
-  nav{border-right:1px solid var(--line); overflow-y:auto; padding:.4rem 0}
+  /* The page scrolls as a document (browser scrollbar, normal wheel and
+     find-in-page behaviour). The day rail is pinned below the sticky
+     header rather than living in its own scrolling pane; --hdr is measured
+     in JS because the site stylesheet can change the header's height. */
+  main{display:grid; grid-template-columns:9.5rem 1fr; align-items:start}
+  nav{
+    position:sticky; top:var(--hdr,3.4rem); align-self:start;
+    height:calc(100vh - var(--hdr,3.4rem)); overflow-y:auto;
+    border-right:1px solid var(--line); padding:.4rem 0;
+  }
   nav button{
     width:100%; text-align:left; background:none; border:0; cursor:pointer;
     color:var(--dim); font:inherit; font-size:.85rem; padding:.45rem .8rem;
@@ -86,8 +94,9 @@
 
   /* ---- contact sheet ---- */
   .sheet{
-    overflow-y:auto; padding:var(--sheet-gap);
+    padding:var(--sheet-gap) var(--sheet-gap) 2rem;
     display:grid; gap:var(--sheet-gap);
+    grid-auto-rows:auto;
     grid-template-columns:repeat(auto-fill,minmax(190px,1fr));
     align-content:start;
   }
@@ -137,26 +146,19 @@
 
   @media (prefers-reduced-motion:reduce){*{transition:none!important}}
 
-  /* Phones: abandon the fixed-viewport app shell. A 100vh body with an
-     inner scroller fights the aspect-ratio tiles on a narrow screen —
-     grid rows collapse and the tiles overlap. Let the document scroll
-     the way a phone user expects instead, with the controls pinned. */
+  /* Phones: single column, controls stacked, day rail as a horizontal
+     strip. Document scrolling is now the default at every width. */
   @media (max-width:640px){
-    html,body{height:auto; overflow:visible}
-    body{display:block; min-height:100%}
-    header{
-      position:sticky; top:0; z-index:20;
-      padding:.6rem .7rem; gap:.5rem;
-      background:var(--panel);
-    }
+    header{padding:.6rem .7rem; gap:.5rem}
     h1{font-size:1rem}
     h1 span{display:block; margin:.15rem 0 0; font-size:.8rem}
     .filters{margin-left:0; width:100%; gap:.5rem}
     .filters select{flex:1 1 0; min-width:0}
     label.toggle{flex:0 0 100%; padding:.1rem 0}
 
-    main{display:block; min-height:0}
+    main{display:block}
     nav{
+      position:static; height:auto;
       display:flex; gap:.15rem; overflow-x:auto; overscroll-behavior-x:contain;
       border-right:0; border-bottom:1px solid var(--line); padding:0;
       -webkit-overflow-scrolling:touch;
@@ -168,12 +170,7 @@
     }
     nav button[aria-current=true]{border-left-color:transparent; border-bottom-color:var(--vehicle)}
 
-    .sheet{
-      overflow:visible; height:auto;
-      grid-template-columns:repeat(auto-fill,minmax(160px,1fr));
-      grid-auto-rows:auto;          /* rows follow the tiles, never collapse */
-      padding-bottom:2rem;
-    }
+    .sheet{grid-template-columns:repeat(auto-fill,minmax(160px,1fr))}
     .stamp{font-size:.72rem; padding:.28rem .4rem; gap:.35rem}
     .empty{padding:1.5rem .9rem}
 
@@ -224,6 +221,16 @@ const family = l => VEHICLES.includes(l) ? "vehicle" : (FAMILY[l] || "other");
 const el = id => document.getElementById(id);
 let rows = [], day = null;
 
+/* The day rail pins below the sticky header. The header's height depends on
+   the site stylesheet's font and padding, so measure rather than hardcode,
+   and re-measure when the filters wrap at a different width. */
+function measureHeader(){
+  const h = document.querySelector("header");
+  if(h) document.documentElement.style.setProperty("--hdr", h.offsetHeight + "px");
+}
+addEventListener("resize", measureHeader);
+measureHeader();
+
 async function getJSON(path){
   const r = await fetch(DET_BASE + path, {cache:"no-cache"});
   if(!r.ok) throw new Error(path + ": " + r.status);
@@ -260,6 +267,10 @@ async function loadDay(d, btn){
   fill(el("camera"), cams, "All cameras");
   fill(el("label"), labs, "All objects");
   render();
+  /* With document scrolling, switching day while scrolled down would leave
+     you mid-sheet in unrelated footage. Go back to the top. */
+  scrollTo({top:0, behavior:"instant"});
+  measureHeader();
 }
 
 function fill(sel, values, allText){
