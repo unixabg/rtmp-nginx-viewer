@@ -210,11 +210,20 @@ status:
 	    | grep -cvE 'make|pgrep|grep' ); \
 	  [ "$$n" -gt 0 ] && echo "running    : YES ($$n process(es))" || echo "running    : no"
 
-## run: process recordings (CAMERA=, FROM=, TO=, FORCE=1 all optional)
+# SINCE gives a relative window instead of an absolute --from, computed when
+# the recipe runs (so it stays correct from cron). Accepts shorthand like
+# 1h / 90m / 2d, or anything `date -d` understands ("yesterday", "2 hours ago").
+# If both SINCE and FROM are given, SINCE wins.
+SINCE_ARG = $(if $(SINCE),--from "$$(date -d "$$(echo '$(SINCE)' | sed -E \
+    's/^([0-9]+)h$$/\1 hours ago/; s/^([0-9]+)m$$/\1 minutes ago/; s/^([0-9]+)d$$/\1 days ago/')" \
+    '+%Y-%m-%d %H:%M')",)
+
+## run: process recordings (CAMERA=, SINCE=1h or FROM=/TO=, FORCE=1 optional)
 run:
 	$(RUNENV) $(NICE) $(RUNNER) \
 	    $(if $(CAMERA),--camera '$(CAMERA)',) \
-	    $(if $(FROM),--from '$(FROM)',) \
+	    $(SINCE_ARG) \
+	    $(if $(SINCE),,$(if $(FROM),--from '$(FROM)',)) \
 	    $(if $(TO),--to '$(TO)',) \
 	    $(if $(FORCE),--force,)
 
@@ -222,7 +231,8 @@ run:
 dry-run:
 	$(RUNENV) $(RUNNER) \
 	    $(if $(CAMERA),--camera '$(CAMERA)',) \
-	    $(if $(FROM),--from '$(FROM)',) \
+	    $(SINCE_ARG) \
+	    $(if $(SINCE),,$(if $(FROM),--from '$(FROM)',)) \
 	    $(if $(TO),--to '$(TO)',) --dry-run
 
 ## index: rebuild the browse index from the manifests (ALL=1 to force)

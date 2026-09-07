@@ -330,6 +330,19 @@ which is authoritative — mtime drifts if files are ever copied or touched.
 | `--force` | reprocess files that already have manifests — deletes them (and their thumbnails) first, scoped to the selection only |
 | `--dry-run` | print the file list and exit |
 
+Through `make`, `SINCE=` gives a **relative** window instead of an absolute
+date, computed when the recipe runs (so it stays correct from cron):
+
+```
+make run PROFILE=viewer SINCE=1h                    # the last hour
+make run PROFILE=viewer SINCE=90m CAMERA=Camera32   # last 90 minutes, one camera
+make dry-run PROFILE=viewer SINCE=2d                # last two days, preview only
+```
+
+It takes shorthand (`1h`, `90m`, `2d`) or anything `date -d` understands
+(`yesterday`, `"2 hours ago"`). If both `SINCE` and `FROM` are given, `SINCE`
+wins; `TO` still applies.
+
 Notes:
 
 * Default behavior is unchanged and still resumable: without `--force`,
