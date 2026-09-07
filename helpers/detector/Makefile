@@ -48,7 +48,8 @@ RUNNER      := $(PREFIX)/run_detection.sh
 RUNENV      := RECORDINGS=$(RECORDINGS) DETECTIONS=$(DETECTIONS) \
                JOBLOG=$(JOBLOG) JOBS=$(JOBS) $(if $(DETECT_MODEL),DETECT_MODEL=$(DETECT_MODEL),)
 
-SCRIPTS     := detect_worker.py run_detection.sh prune_detections.sh
+SCRIPTS     := detect_worker.py run_detection.sh prune_detections.sh build_index.py
+WEBPAGE     := detections.html
 CONFIG      := cameras.json
 
 .PHONY: help install install-deps install-scripts install-config model \
@@ -202,6 +203,16 @@ dry-run:
 	    $(if $(CAMERA),--camera '$(CAMERA)',) \
 	    $(if $(FROM),--from '$(FROM)',) \
 	    $(if $(TO),--to '$(TO)',) --dry-run
+
+## index: rebuild the browse index from the manifests (ALL=1 to force)
+index:
+	$(PY) $(PREFIX)/build_index.py --detections $(DETECTIONS) $(if $(ALL),--all,)
+
+## web: install the browse page next to the detections it reads
+web: index
+	sudo cp $(WEBPAGE) $(DETECTIONS)/
+	@echo "installed $(DETECTIONS)/$(WEBPAGE)"
+	@echo "add to nginx:  location /detections/ { alias $(DETECTIONS)/; index $(WEBPAGE); }"
 
 ## prune: apply the retention policy to the detections tree
 prune:

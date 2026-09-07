@@ -335,21 +335,122 @@ Schedule it from cron under `flock` so runs never overlap:
     /opt/detection/run_detection.sh >> /var/log/detection/run.log 2>&1
 ```
 
+## Tracks: one object is one event
+
+Detections are grouped into **tracks** before the manifest is written, so a
+car parked in view for twenty minutes is one entry, not one per sampled
+frame. Each track records when the object appeared and disappeared, how many
+sightings it had, its peak confidence, and where it entered and left the
+frame:
+
+```json
+{
+ "event_count": 2, "moving_count": 1, "stationary_count": 1,
+ "tracks": [
+  { "id": 1, "label": "car", "first_seen": 0.1, "last_seen": 18.1,
+    "duration": 18.0, "frames": 10, "conf_max": 0.9, "stationary": false,
+    "box_first": [20,120,110,180], "box_last": [488,120,578,180],
+    "thumb": "track001-car-t0s.jpg" }
+ ]
+}
+```
+
+**Thumbnails are named after their track** — `track001-car-t0s.jpg` is
+track 1, a car, best seen at 0 s — so an image and its manifest entry are
+obviously the same object. One image per track (its highest-confidence
+sighting) rather than one per frame.
+
+**`stationary`** separates a car driving past from a car sitting in the lot:
+it's true when the box centre never wandered more than a quarter of the
+box's own size over the track's life. Normalizing by box size is what lets
+one threshold work for both a car filling the frame and a person far down a
+driveway. Filter these out for "what happened" browsing, or keep them for
+"what's been sitting there for three hours".
+
+How association works: each detection is matched to an existing track of the
+same label if the boxes overlap (IoU ≥ `TRACK_IOU`) **or** the detection
+lands near where that track's recent velocity predicts it should be
+(`TRACK_MAX_MOVE`, in box-diagonal units). The prediction step matters
+because at 2-second sampling a fast car moves further than its own width
+between frames, so overlap alone would fragment it into a track per frame.
+A track closes after `TRACK_MAX_GAP_SEC` unseen. These constants live at the
+top of `detect_worker.py`.
+
+Known limits:
+
+* **Sampling sets the resolution.** Something crossing the frame in under one
+  `interval` may appear in a single frame. Lower `interval` for driveways
+  and doors — it's a per-camera setting in `cameras.json`.
+* **Segment boundaries are hard cuts.** Each file is processed
+  independently, so a car parked across six segments produces six tracks,
+  one per file. Collapsing those belongs in the browse layer; doing it in the
+  worker would make files order-dependent and break parallelism.
+* Track ids are per file, not global. `track001` in one manifest has nothing
+  to do with `track001` in the next.
+
 ## 4. Serve /detections from the viewer box
 
-Export `/var/detections` from the detection box (or write output directly to
-a share the viewer box hosts) and add a location block on the viewer:
+Two pieces: a static index built from the manifests, and a page that reads it.
+The browser can't list a directory, so `build_index.py` writes small JSON
+files that nginx serves like anything else — no server-side API, no runtime
+dependency added to the recorder.
+
+```
+# after a detection run, (re)build the index
+/opt/detection/venv/bin/python3 /opt/detection/build_index.py \
+    --detections /videos/detections
+
+# install the page next to the detections it reads
+sudo cp detections.html /videos/detections/
+```
+
+It writes `<detections>/index/days.json` plus one `YYYY-MM-DD.json` shard per
+day. Sharding matters at scale: 10,000 recordings is roughly 20,000 tracks,
+which is a multi-megabyte blob as one file — per-day shards keep each page
+load small. Rebuilds are incremental (only days with newer manifests);
+`--all` forces a full rebuild after a format change.
+
+nginx, on the viewer box:
 
 ```nginx
 location /detections/ {
     alias /videos/detections/;
-    autoindex on;               # or point a small JS page at the manifests
+    index detections.html;
+    autoindex off;                 # the page reads index/*.json instead
+}
+
+location /recordings/ {
+    alias /videos/recordings/;     # the page links video playback here
 }
 ```
 
-Each manifest is `<camera>/<file>.mp4.json` with per-event timestamps, so a
-history-style page can deep-link into the corresponding recording at the
-event offset.
+Then browse to `/detections/`. If your recordings are served somewhere other
+than `/recordings/`, edit `REC_BASE` at the top of the script block in
+`detections.html`.
+
+### What the page does
+
+A contact sheet: one tile per track, stamped with wall-clock time, camera,
+object type, and duration. Days run down the left with their track counts.
+Filter by camera and object; parked and static objects are hidden by default
+and can be shown with one click. Clicking a tile opens the recording seeked
+to three seconds before the track started, so the event has some lead-in.
+
+It is **read-only by design** — it never triggers detection. Runs stay on the
+command line where you can see and control what they cost.
+
+Notes:
+
+* Colour on each tile encodes the object family (person, vehicle, animal,
+  other), so a sheet can be scanned without reading every stamp.
+* Static objects appear desaturated and tagged, rather than being deleted —
+  "a van has been parked there since 6am" is sometimes the thing you want.
+* Thumbnails load lazily and tiles fall back to a labelled placeholder if an
+  image is missing (e.g. a run made with `--no-thumbs`).
+* No fonts, frameworks, or CDN calls: the page works on a box with no route
+  to the internet.
+* Wall-clock times come from the recording's filename plus the track offset,
+  so they're real times of day, not offsets into a file.
 
 ## 5. Retention for detections
 

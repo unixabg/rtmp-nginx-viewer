@@ -1,0 +1,302 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Detections</title>
+<style>
+/* ---------------------------------------------------------------
+   Contact sheet for recorded detections. No external fonts, no CDN,
+   no libraries — the recorder box may have no route to the internet.
+
+   Three cascade layers, in this order:
+     theme   this page's colour/type DEFAULTS — deliberately weakest,
+             so the site's own stylesheet overrides them and the page
+             matches the rest of the project.
+     site    /style.css, imported below. Wins over theme.
+     layout  structure: grid, aspect ratios, stacking. Deliberately
+             strongest, because a site rule like `main{display:block}`
+             would otherwise collapse the sheet.
+
+   So the page borrows the project's look and keeps its own bones.
+   Standalone (no style.css) it falls back to the light theme here —
+   a 404 is harmless.
+
+   Caveat, verified not assumed: the cascade INVERTS layer order for
+   !important, so `main{display:block !important}` in style.css would
+   still break the layout. Nothing short of shadow DOM prevents that.
+   --------------------------------------------------------------- */
+@layer theme, site, layout;
+@import url("/style.css") layer(site);
+
+@layer theme {
+  :root{
+    --bg:#ffffff; --panel:#f7f8f9; --sunk:#eef0f2;
+    --line:#e3e6ea; --line-soft:#eef0f2;
+    --ink:#1b1f24; --dim:#5f6b76; --faint:#8b96a0;
+    --person:#c07a10; --vehicle:#15718c; --animal:#4a7c3f; --other:#7d5ba6;
+  }
+  body{
+    background:var(--bg); color:var(--ink);
+    font:15px/1.45 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  }
+  h1{font-size:1.05rem; font-weight:600; letter-spacing:.01em}
+  select,input[type=search]{
+    background:#fff; color:inherit; border:1px solid var(--line);
+    border-radius:3px; padding:.3rem .5rem; font-size:.85rem;
+  }
+  header{background:var(--panel)}
+  nav{background:var(--panel)}
+  dialog{background:var(--bg); color:var(--ink); border:1px solid var(--line)}
+}
+
+@layer layout {
+  :root{--sheet-gap:2px}
+  *{box-sizing:border-box}
+  html,body{margin:0; height:100%}
+  body{
+    display:grid; grid-template-rows:auto 1fr; height:100vh; overflow:hidden;
+    font-variant-numeric:tabular-nums;
+  }
+
+  /* ---- header + filters ---- */
+  header{
+    display:flex; align-items:baseline; gap:1.25rem; flex-wrap:wrap;
+    padding:.85rem 1.1rem; border-bottom:1px solid var(--line);
+  }
+  h1{margin:0}
+  h1 span{color:var(--faint); font-weight:400; margin-left:.5rem; font-size:.9rem}
+  .filters{display:flex; gap:.6rem; align-items:center; flex-wrap:wrap; margin-left:auto}
+  .filters select{font-family:inherit}
+  label.toggle{display:flex; align-items:center; gap:.4rem; font-size:.85rem; color:var(--dim)}
+  :focus-visible{outline:2px solid var(--vehicle); outline-offset:2px}
+
+  /* ---- frame ---- */
+  main{display:grid; grid-template-columns:9.5rem 1fr; min-height:0}
+  nav{border-right:1px solid var(--line); overflow-y:auto; padding:.4rem 0}
+  nav button{
+    width:100%; text-align:left; background:none; border:0; cursor:pointer;
+    color:var(--dim); font:inherit; font-size:.85rem; padding:.45rem .8rem;
+    display:flex; justify-content:space-between; gap:.4rem;
+    border-left:3px solid transparent; border-radius:0;
+  }
+  nav button:hover{color:var(--ink)}
+  nav button[aria-current=true]{color:var(--ink); border-left-color:var(--vehicle); font-weight:600}
+  nav .n{color:var(--faint); font-size:.78rem; font-weight:400}
+
+  /* ---- contact sheet ---- */
+  .sheet{
+    overflow-y:auto; padding:var(--sheet-gap);
+    display:grid; gap:var(--sheet-gap);
+    grid-template-columns:repeat(auto-fill,minmax(190px,1fr));
+    align-content:start;
+  }
+  .cell{
+    position:relative; background:var(--sunk); border:0; padding:0; cursor:pointer;
+    aspect-ratio:16/9; overflow:hidden; color:inherit; font:inherit;
+    border-radius:0; width:auto; display:block;
+  }
+  .cell img{width:100%; height:100%; max-width:none; object-fit:cover; display:block; border:0}
+  .cell.noimg::after{
+    content:attr(data-label); position:absolute; inset:0; display:grid;
+    place-items:center; color:var(--faint); font-size:.8rem;
+  }
+  .cell.still img{filter:saturate(.35) brightness(.92)}
+  /* stamp sits on the image, so it stays light-on-dark whatever the theme */
+  .stamp{
+    position:absolute; left:0; right:0; bottom:0;
+    display:flex; align-items:center; gap:.45rem;
+    padding:.3rem .45rem; font-size:.75rem; line-height:1.3;
+    background:linear-gradient(transparent,#000000cc 45%); color:#fff;
+  }
+  .stamp .time{font-weight:600}
+  .stamp .cam{color:#ffffffb8; overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+  .stamp .dur{margin-left:auto; color:#ffffffb8}
+  .dot{width:7px; height:7px; border-radius:50%; flex:none}
+  .dot.person{background:var(--person)} .dot.vehicle{background:var(--vehicle)}
+  .dot.animal{background:var(--animal)} .dot.other{background:var(--other)}
+  .parked{
+    position:absolute; top:.35rem; left:.35rem; font-size:.68rem;
+    padding:.1rem .3rem; border:1px solid #ffffff66; color:#fff;
+    background:#00000073; border-radius:2px;
+  }
+  .empty{padding:2.5rem 1.2rem; color:var(--dim); max-width:40ch}
+  .empty b{display:block; color:var(--ink); font-weight:600; margin-bottom:.35rem}
+
+  /* ---- detail ---- */
+  dialog{padding:0; width:min(90vw,880px); border-radius:4px}
+  dialog::backdrop{background:#00000066}
+  dialog video{width:100%; display:block; background:#000; max-width:none}
+  .meta{
+    display:flex; gap:1rem; flex-wrap:wrap; align-items:center;
+    padding:.7rem .9rem; font-size:.85rem; color:var(--dim);
+    border-top:1px solid var(--line-soft);
+  }
+  .meta .k{color:var(--ink); font-weight:600}
+  .meta button{margin-left:auto; font:inherit; font-size:.85rem; cursor:pointer; padding:.3rem .7rem}
+
+  @media (prefers-reduced-motion:reduce){*{transition:none!important}}
+  @media (max-width:640px){
+    main{grid-template-columns:1fr; grid-template-rows:auto 1fr}
+    nav{display:flex; overflow-x:auto; border-right:0; border-bottom:1px solid var(--line)}
+    nav button{border-left:0; border-bottom:3px solid transparent; white-space:nowrap}
+    nav button[aria-current=true]{border-left-color:transparent; border-bottom-color:var(--vehicle)}
+  }
+}
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Detections<span id="count"></span></h1>
+  <div class="filters">
+    <select id="camera"><option value="">All cameras</option></select>
+    <select id="label"><option value="">All objects</option></select>
+    <label class="toggle"><input type="checkbox" id="hideStill" checked> Hide parked and static</label>
+  </div>
+</header>
+
+<main>
+  <nav id="days" aria-label="Days"></nav>
+  <div class="sheet" id="sheet"></div>
+</main>
+
+<dialog id="detail">
+  <video id="player" controls preload="metadata"></video>
+  <div class="meta">
+    <span><span class="k" id="dCam"></span> <span id="dTime"></span></span>
+    <span><span class="k" id="dLabel"></span> <span id="dDur"></span></span>
+    <span id="dConf"></span>
+    <button id="close">Close</button>
+  </div>
+</dialog>
+
+<script>
+/* Where nginx serves the recordings. Change this if your location block
+   uses a different path. Trailing slash required. */
+const REC_BASE  = "/recordings/";
+/* Where this index and the thumbnails live, relative to this page. */
+const DET_BASE  = "./";
+
+const FAMILY = {person:"person", dog:"animal", cat:"animal", bird:"animal"};
+const VEHICLES = ["car","truck","bus","motorcycle","bicycle"];
+const family = l => VEHICLES.includes(l) ? "vehicle" : (FAMILY[l] || "other");
+
+const el = id => document.getElementById(id);
+let rows = [], day = null;
+
+async function getJSON(path){
+  const r = await fetch(DET_BASE + path, {cache:"no-cache"});
+  if(!r.ok) throw new Error(path + ": " + r.status);
+  return r.json();
+}
+
+async function start(){
+  let days;
+  try{ days = await getJSON("index/days.json"); }
+  catch(e){ return showEmpty("No index yet",
+    "Run build_index.py against the detections directory, then reload."); }
+  if(!days.length) return showEmpty("Nothing indexed",
+    "No manifests were found. Run detection first, then build the index.");
+
+  el("days").innerHTML = "";
+  days.forEach((d,i) => {
+    const b = document.createElement("button");
+    b.innerHTML = `<span>${d.day.slice(5)}</span><span class="n">${d.tracks}</span>`;
+    b.title = `${d.day} — ${d.tracks} tracks`;
+    b.onclick = () => loadDay(d.day, b);
+    el("days").appendChild(b);
+    if(i === 0) queueMicrotask(() => b.click());
+  });
+}
+
+async function loadDay(d, btn){
+  [...el("days").children].forEach(b => b.setAttribute("aria-current", b === btn));
+  day = d;
+  try{ const shard = await getJSON(`index/${d}.json`); rows = shard.tracks; }
+  catch(e){ return showEmpty("Can't read that day", e.message); }
+
+  const cams = [...new Set(rows.map(r => r.camera))].sort();
+  const labs = [...new Set(rows.map(r => r.label))].sort();
+  fill(el("camera"), cams, "All cameras");
+  fill(el("label"), labs, "All objects");
+  render();
+}
+
+function fill(sel, values, allText){
+  const keep = sel.value;
+  sel.innerHTML = `<option value="">${allText}</option>` +
+    values.map(v => `<option${v === keep ? " selected" : ""}>${v}</option>`).join("");
+}
+
+function render(){
+  const cam = el("camera").value, lab = el("label").value,
+        hide = el("hideStill").checked;
+  const list = rows.filter(r =>
+    (!cam || r.camera === cam) && (!lab || r.label === lab) && !(hide && r.still));
+
+  el("count").textContent = list.length
+    ? `${list.length} of ${rows.length} on ${day}` : "";
+
+  const sheet = el("sheet");
+  sheet.innerHTML = "";
+  if(!list.length){
+    /* Say which filter is actually responsible: only blame the static
+       toggle if unticking it would really reveal something. */
+    const hidden = rows.filter(r =>
+      (!cam || r.camera === cam) && (!lab || r.label === lab) && r.still).length;
+    return showEmpty("Nothing matches these filters",
+      hide && hidden
+        ? `${hidden} parked or static ${hidden === 1 ? "object is" : "objects are"} hidden. Untick the filter to see them.`
+        : "Try another camera, object, or day.");
+  }
+  const frag = document.createDocumentFragment();
+  for(const r of list){
+    const b = document.createElement("button");
+    b.className = "cell" + (r.still ? " still" : "") + (r.thumb ? "" : " noimg");
+    b.dataset.label = r.label;
+    b.onclick = () => openDetail(r);
+    if(r.thumb){
+      const img = document.createElement("img");
+      img.loading = "lazy"; img.alt = `${r.label} on ${r.camera} at ${r.clock}`;
+      img.src = DET_BASE + r.thumb;
+      img.onerror = () => { b.classList.add("noimg"); img.remove(); };
+      b.appendChild(img);
+    }
+    if(r.still) b.insertAdjacentHTML("beforeend", `<span class="parked">static</span>`);
+    b.insertAdjacentHTML("beforeend",
+      `<span class="stamp"><span class="dot ${family(r.label)}"></span>` +
+      `<span class="time">${r.clock}</span>` +
+      `<span class="cam">${r.camera}</span>` +
+      `<span class="dur">${Math.round(r.dur)}s</span></span>`);
+    frag.appendChild(b);
+  }
+  sheet.appendChild(frag);
+}
+
+function showEmpty(title, body){
+  el("sheet").innerHTML = `<div class="empty"><b>${title}</b>${body}</div>`;
+}
+
+function openDetail(r){
+  const v = el("player");
+  v.src = REC_BASE + r.src;
+  v.currentTime = 0;
+  /* Seek once metadata is available; a few seconds of lead-in gives the
+     event context instead of starting mid-motion. */
+  v.onloadedmetadata = () => { v.currentTime = Math.max(0, r.t - 3); };
+  el("dCam").textContent = r.camera;
+  el("dTime").textContent = `${r.day} ${r.clock}`;
+  el("dLabel").textContent = r.label + (r.still ? " (static)" : "");
+  el("dDur").textContent = `${Math.round(r.dur)}s`;
+  el("dConf").textContent = r.conf ? `confidence ${r.conf}` : "";
+  el("detail").showModal();
+}
+
+el("close").onclick = () => el("detail").close();
+el("detail").addEventListener("close", () => { el("player").pause(); el("player").src = ""; });
+["camera","label","hideStill"].forEach(id => el(id).onchange = render);
+start();
+</script>
+</body>
+</html>
