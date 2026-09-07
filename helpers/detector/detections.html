@@ -136,11 +136,50 @@
   .meta button{margin-left:auto; font:inherit; font-size:.85rem; cursor:pointer; padding:.3rem .7rem}
 
   @media (prefers-reduced-motion:reduce){*{transition:none!important}}
+
+  /* Phones: abandon the fixed-viewport app shell. A 100vh body with an
+     inner scroller fights the aspect-ratio tiles on a narrow screen —
+     grid rows collapse and the tiles overlap. Let the document scroll
+     the way a phone user expects instead, with the controls pinned. */
   @media (max-width:640px){
-    main{grid-template-columns:1fr; grid-template-rows:auto 1fr}
-    nav{display:flex; overflow-x:auto; border-right:0; border-bottom:1px solid var(--line)}
-    nav button{border-left:0; border-bottom:3px solid transparent; white-space:nowrap}
+    html,body{height:auto; overflow:visible}
+    body{display:block; min-height:100%}
+    header{
+      position:sticky; top:0; z-index:20;
+      padding:.6rem .7rem; gap:.5rem;
+      background:var(--panel);
+    }
+    h1{font-size:1rem}
+    h1 span{display:block; margin:.15rem 0 0; font-size:.8rem}
+    .filters{margin-left:0; width:100%; gap:.5rem}
+    .filters select{flex:1 1 0; min-width:0}
+    label.toggle{flex:0 0 100%; padding:.1rem 0}
+
+    main{display:block; min-height:0}
+    nav{
+      display:flex; gap:.15rem; overflow-x:auto; overscroll-behavior-x:contain;
+      border-right:0; border-bottom:1px solid var(--line); padding:0;
+      -webkit-overflow-scrolling:touch;
+    }
+    nav button{
+      width:auto; flex:0 0 auto; white-space:nowrap;
+      border-left:0; border-bottom:3px solid transparent;
+      padding:.6rem .8rem; gap:.45rem;
+    }
     nav button[aria-current=true]{border-left-color:transparent; border-bottom-color:var(--vehicle)}
+
+    .sheet{
+      overflow:visible; height:auto;
+      grid-template-columns:repeat(auto-fill,minmax(160px,1fr));
+      grid-auto-rows:auto;          /* rows follow the tiles, never collapse */
+      padding-bottom:2rem;
+    }
+    .stamp{font-size:.72rem; padding:.28rem .4rem; gap:.35rem}
+    .empty{padding:1.5rem .9rem}
+
+    dialog{width:96vw; max-width:none}
+    .meta{gap:.5rem 1rem; font-size:.8rem}
+    .meta button{padding:.45rem .9rem}
   }
 }
 </style>
