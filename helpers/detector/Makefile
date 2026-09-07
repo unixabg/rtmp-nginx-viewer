@@ -214,6 +214,55 @@ web: index
 	@echo "installed $(DETECTIONS)/$(WEBPAGE)"
 	@echo "add to nginx:  location /detections/ { alias $(DETECTIONS)/; index $(WEBPAGE); }"
 
+## classes: list the object classes the current model can actually detect
+classes:
+	@$(PY) -c "from ultralytics import YOLO; import json,sys; \
+	m=YOLO('$(if $(DETECT_MODEL),$(DETECT_MODEL),$(MODEL))'); \
+	names=sorted(m.names.values()); \
+	print('model knows %d classes:' % len(names)); \
+	print('  ' + ', '.join(names)); \
+	cfg=json.load(open('$(PREFIX)/$(CONFIG)')) if __import__('os').path.exists('$(PREFIX)/$(CONFIG)') else None; \
+	want=set(cfg['default'].get('classes',[])) | {c for r in cfg.get('rules',[]) for c in r.get('classes',[])} if cfg else set(); \
+	bad=sorted(want - set(names)); \
+	print(); \
+	print('NOT in this model (will never match): ' + ', '.join(bad)) if bad else print('every class in cameras.json exists in this model')"
+
+## bench: summarize processing speed across manifests (per host and model)
+bench:
+	@$(PY) -c "$$BENCH_PY" "$(DETECTIONS)"
+
+define BENCH_PY
+import json,statistics,sys,collections,pathlib
+root=pathlib.Path(sys.argv[1]); by=collections.defaultdict(list); old=0
+for m in root.rglob('*.json'):
+    if 'index' in m.parts: continue
+    try: d=json.loads(m.read_text())
+    except Exception: continue
+    t=d.get('timing')
+    if not t: old+=1; continue
+    h=d.get('host',{})
+    by[(h.get('name','?'), h.get('model','?'))].append(t)
+if not by:
+    print('no timed manifests yet' + (' (%d predate timing; reprocess with --force to measure)'%old if old else '')); raise SystemExit
+def med(v): return round(statistics.median(v),1) if v else None
+print('%-18s %-34s %6s %8s %9s %9s %7s'%('host','model','files','wall_s','xRealtime','infer_ms','decode%'))
+print('-'*100)
+for (host,model),ts in sorted(by.items()):
+    rt=[t['realtime_factor'] for t in ts if t.get('realtime_factor')]
+    wall=[t['wall_sec'] for t in ts]
+    ips=[t['ms_per_inference'] for t in ts if t.get('ms_per_inference')]
+    dec=[100*t['decode_sec']/t['wall_sec'] for t in ts if t.get('wall_sec')]
+    print('%-18s %-34s %6d %8s %9s %9s %6s%%'%(host[:18], pathlib.Path(model).name[:34],
+          len(ts), med(wall), med(rt), med(ips), med(dec)))
+print()
+allrt=[t['realtime_factor'] for ts in by.values() for t in ts if t.get('realtime_factor')]
+if allrt:
+    print('median %.1fx realtime -> one worker keeps up with ~%d continuous cameras'%(
+          statistics.median(allrt), int(statistics.median(allrt))))
+if old: print('%d manifest(s) predate timing; --force to re-measure'%old)
+endef
+export BENCH_PY
+
 ## prune: apply the retention policy to the detections tree
 prune:
 	DETECTIONS=$(DETECTIONS) RECORDINGS=$(RECORDINGS) $(PREFIX)/prune_detections.sh

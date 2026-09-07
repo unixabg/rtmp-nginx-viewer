@@ -243,6 +243,41 @@ Per-rule keys (only `classes` is required; the rest inherit from `default`):
 Useful COCO classes: `person`, `bicycle`, `car`, `motorcycle`, `bus`,
 `truck`, `cat`, `dog`, `bird`, `backpack`, `handbag`, `suitcase`.
 
+### The model only knows its own vocabulary
+
+`classes` filters what the model reports; it cannot invent categories. The
+default YOLO11 models are trained on COCO's 80 classes, which cover people,
+vehicles, and common domestic animals — but **not** wildlife like raccoons,
+squirrels, deer, or coyotes. Asking for a class the model has never heard of
+matches nothing and yields empty manifests.
+
+The worker now warns on stderr when a configured class isn't in the model,
+and `make classes` lists what the current model actually knows, flagging any
+entry in `cameras.json` that will never match:
+
+```
+make classes PROFILE=viewer DETECT_MODEL=/opt/detection/yolo11n_openvino_model
+```
+
+If you want species outside COCO, in rough order of effort:
+
+* **Use a proxy class.** COCO models usually report a raccoon as `cat`,
+  `dog`, or `bear`, and a squirrel as `cat` or `bird`. Crude, but if the
+  question is "did an animal come up the driveway", filtering for
+  `["cat","dog","bird","bear"]` answers it without changing anything. False
+  positives are the cost.
+* **Open-vocabulary detection.** YOLO-World and YOLOE accept arbitrary text
+  prompts — literally `["raccoon", "squirrel"]` — with no training. This is
+  the direct answer, and it slots into the pluggable `Detector` class. The
+  cost is speed: these models are several times heavier than YOLO11n and
+  don't export to NCNN/OpenVINO as cleanly, so they want a GPU node rather
+  than a Celeron.
+* **A wildlife-specific model.** MegaDetector finds animals reliably but
+  only labels them `animal`, not by species; pairing it with a species
+  classifier is the accurate-but-involved route. Or fine-tune YOLO on
+  labelled clips of your own — your recordings are the training set, and
+  a few hundred examples per species goes a long way.
+
 Notes:
 
 * **Narrower class lists are faster** — the model runs the same, but a
@@ -451,6 +486,47 @@ Notes:
   to the internet.
 * Wall-clock times come from the recording's filename plus the track offset,
   so they're real times of day, not offsets into a file.
+
+## Measuring speed across machines
+
+Every manifest records how long the file took and where the time went, which
+is what you need when rolling this out to hardware of varying capability:
+
+```json
+"timing": {
+  "wall_sec": 13.4, "video_sec": 300.0, "realtime_factor": 22.4,
+  "decode_sec": 3.2, "motion_gate_sec": 0.4, "inference_sec": 8.9,
+  "thumbs_sec": 0.3, "frames_sampled": 150, "frames_inferred": 40,
+  "ms_per_inference": 96.4
+},
+"host": { "name": "nvr-viewer", "model": "/opt/detection/yolo11n_openvino_model" }
+```
+
+`realtime_factor` is the headline number: 22.4 means a 5-minute recording
+took 13 seconds, so **one worker keeps up with roughly 22 cameras** of
+continuous recording. Multiply by your job count for the box's capacity.
+
+The decode/inference split tells you what to fix. Inference-dominated means
+a faster model or a GPU will help. Decode-dominated means it won't — you're
+bound by pulling frames off disk, and the lever is a longer `interval` or
+fewer parallel jobs.
+
+`make bench` summarizes across everything already processed, grouped by host
+and model, so a mixed fleet can be compared directly:
+
+```
+$ make bench PROFILE=viewer
+host               model                               files   wall_s xRealtime  infer_ms decode%
+gpu-box            yolo11n.pt                              6      1.7     175.2      10.4   17.2%
+nvr-viewer         yolo11n_openvino_model                  6     13.1      22.9      96.4   24.2%
+pi5                yolo11n_ncnn_model                      6     38.1       7.9     336.8   25.2%
+
+median 22.9x realtime -> one worker keeps up with ~22 continuous cameras
+```
+
+It reads existing manifests and costs nothing to run. Manifests written
+before timing existed are counted and reported separately; re-run those
+files with `--force` if you want them measured.
 
 ## 5. Retention for detections
 

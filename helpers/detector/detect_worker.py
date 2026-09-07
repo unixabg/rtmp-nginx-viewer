@@ -42,6 +42,7 @@ import argparse
 import fnmatch
 import json
 import os
+import socket
 import sys
 import time
 from pathlib import Path
@@ -135,6 +136,20 @@ class Detector:
         self.names = self.model.names
         self.classes = set(classes)
         self.conf = conf
+        # A class the model was never trained on can never match, and the
+        # result is an empty manifest with no error - the worst kind of
+        # failure. Say so loudly instead. COCO models know 80 things;
+        # 'raccoon' and 'squirrel' are not among them.
+        known = set(self.names.values())
+        unknown = sorted(self.classes - known)
+        if unknown:
+            print(f"WARNING: model '{model_path}' has no class(es): "
+                  f"{', '.join(unknown)} — these will never match. "
+                  f"Run 'make classes' to list what it does know.",
+                  file=sys.stderr)
+            if not (self.classes & known):
+                print("WARNING: none of the configured classes exist in this "
+                      "model; every manifest will be empty.", file=sys.stderr)
 
     def detect(self, frame_bgr):
         results = self.model(frame_bgr, verbose=False, conf=self.conf)
@@ -382,31 +397,45 @@ def process(input_path: Path, input_root: Path, output_root: Path,
     sampled = 0
     inferred = 0
     t0 = time.time()
+    # Timing breakdown. Decode vs inference is the number that tells you
+    # whether a faster model (or a GPU) would actually help this machine,
+    # or whether it is already bottlenecked on pulling frames off disk.
+    t_decode = t_infer = t_gate = 0.0
+    frame_total = cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0
 
     while True:
+        _d = time.perf_counter()
         ok = cap.grab()
+        t_decode += time.perf_counter() - _d
         if not ok:
             break
         if frame_idx % step != 0:
             frame_idx += 1
             continue
+        _d = time.perf_counter()
         ok, frame = cap.retrieve()
+        t_decode += time.perf_counter() - _d
         frame_idx += 1
         if not ok:
             continue
         sampled += 1
 
+        _g = time.perf_counter()
         small = cv2.resize(frame,
                            (MOTION_DOWNSCALE_W,
                             int(frame.shape[0] * MOTION_DOWNSCALE_W / frame.shape[1])))
         gray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
-        if prev_gray is not None:
-            if motion_score(prev_gray, gray) < min_area:
-                prev_gray = gray
-                continue  # nothing changed; don't wake the model
+        gated = False
+        if prev_gray is not None and motion_score(prev_gray, gray) < min_area:
+            gated = True
         prev_gray = gray
+        t_gate += time.perf_counter() - _g
+        if gated:
+            continue  # nothing changed; don't wake the model
 
+        _i = time.perf_counter()
         dets = detector.detect(frame)
+        t_infer += time.perf_counter() - _i
         inferred += 1
         if not dets:
             continue
@@ -417,6 +446,7 @@ def process(input_path: Path, input_root: Path, output_root: Path,
         tracker.update(dets, ts_sec, frame if save_thumbs else None)
 
     cap.release()
+    t_thumb = time.perf_counter()
 
     # Close tracks and turn them into manifest entries. One track = one
     # object seen over time = one event, instead of one event per frame.
@@ -450,17 +480,37 @@ def process(input_path: Path, input_root: Path, output_root: Path,
 
     labels = sorted({tr["label"] for tr in tracks})
     moving = [tr for tr in tracks if not tr["stationary"]]
+    t_thumb = time.perf_counter() - t_thumb
+    wall = time.time() - t0
+    video_sec = round(frame_total / fps, 1) if frame_total and fps else None
+    timing = {
+        "wall_sec": round(wall, 2),
+        "video_sec": video_sec,
+        # >1 means faster than realtime: 6.7 == one core keeps up with ~6
+        # cameras of continuous recording. The headline portability number.
+        "realtime_factor": (round(video_sec / wall, 1)
+                            if video_sec and wall > 0 else None),
+        "decode_sec": round(t_decode, 2),
+        "motion_gate_sec": round(t_gate, 2),
+        "inference_sec": round(t_infer, 2),
+        "thumbs_sec": round(t_thumb, 2),
+        "frames_sampled": sampled,
+        "frames_inferred": inferred,
+        "ms_per_inference": (round(t_infer * 1000 / inferred, 1)
+                             if inferred else None),
+    }
     manifest = {
         "source": str(input_path.relative_to(input_root)),
         "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
-        "duration_sampled_frames": sampled,
-        "frames_inferred": inferred,
-        "wall_time_sec": round(time.time() - t0, 1),
         "labels": labels,
         "event_count": len(tracks),
         "moving_count": len(moving),
         "stationary_count": len(tracks) - len(moving),
         "tracks": tracks,
+        "timing": timing,
+        # Which machine produced this, so timings from a mixed fleet can be
+        # told apart after the fact.
+        "host": {"name": socket.gethostname(), "model": MODEL_PATH},
         "worker": {"model": MODEL_PATH,
                    "rule": rule.get("note", rule.get("pattern", "default")),
                    "classes": sorted(classes),
@@ -477,9 +527,14 @@ def process(input_path: Path, input_root: Path, output_root: Path,
     tmp.write_text(json.dumps(manifest, indent=1))
     tmp.rename(manifest_path)
     stat_n = len(tracks) - len(moving)
+    rt = timing["realtime_factor"]
     print(f"done: {input_path.name} tracks={len(tracks)} "
           f"(moving={len(moving)}, stationary={stat_n}) labels={labels} "
-          f"({manifest['wall_time_sec']}s)")
+          f"| {timing['wall_sec']}s"
+          + (f" for {timing['video_sec']}s video = {rt}x realtime" if rt else "")
+          + f" | decode {timing['decode_sec']}s, gate {timing['motion_gate_sec']}s, "
+          f"infer {timing['inference_sec']}s"
+          + (f" ({inferred} @ {timing['ms_per_inference']}ms)" if inferred else ""))
     return 0
 
 
