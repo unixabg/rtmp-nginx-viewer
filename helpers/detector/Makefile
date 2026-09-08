@@ -32,6 +32,7 @@ JOBS        ?= 2
 NICE        ?= nice -n 15 ionice -c3
 
 # GPU=1 installs CUDA-enabled torch; default is the slim CPU wheel set.
+CRON_LIMIT  ?= 40    # max files per scheduled sweep; newest first
 GPU         ?= 0
 # ACCEL picks the CPU export format: openvino (Intel) or ncnn (ARM).
 ACCEL       ?= openvino
@@ -218,13 +219,14 @@ SINCE_ARG = $(if $(SINCE),--from "$$(date -d "$$(echo '$(SINCE)' | sed -E \
     's/^([0-9]+)h$$/\1 hours ago/; s/^([0-9]+)m$$/\1 minutes ago/; s/^([0-9]+)d$$/\1 days ago/')" \
     '+%Y-%m-%d %H:%M')",)
 
-## run: process recordings (CAMERA=, SINCE=1h or FROM=/TO=, FORCE=1 optional)
+## run: process recordings (CAMERA=, SINCE=1h, FROM=/TO=, LIMIT=N, FORCE=1)
 run:
 	$(RUNENV) $(NICE) $(RUNNER) \
 	    $(if $(CAMERA),--camera '$(CAMERA)',) \
 	    $(SINCE_ARG) \
 	    $(if $(SINCE),,$(if $(FROM),--from '$(FROM)',)) \
 	    $(if $(TO),--to '$(TO)',) \
+	    $(if $(LIMIT),--limit $(LIMIT),) \
 	    $(if $(FORCE),--force,)
 
 ## dry-run: show what 'make run' would process, without doing it
@@ -233,7 +235,8 @@ dry-run:
 	    $(if $(CAMERA),--camera '$(CAMERA)',) \
 	    $(SINCE_ARG) \
 	    $(if $(SINCE),,$(if $(FROM),--from '$(FROM)',)) \
-	    $(if $(TO),--to '$(TO)',) --dry-run
+	    $(if $(TO),--to '$(TO)',) \
+	    $(if $(LIMIT),--limit $(LIMIT),) --dry-run
 
 ## index: rebuild the browse index from the manifests (ALL=1 to force)
 index:
@@ -305,7 +308,7 @@ install-cron:
 	@printf '%s\n' \
 	  'SHELL=/bin/bash' \
 	  'PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin' \
-	  '*/10 * * * * $(shell whoami) flock -n /tmp/detect.lock env $(RUNENV) $(NICE) $(RUNNER) >> /var/log/detection.log 2>&1 && $(PY) $(PREFIX)/build_index.py --detections $(DETECTIONS) >> /var/log/detection.log 2>&1' \
+	  '*/10 * * * * $(shell whoami) flock -n /tmp/detect.lock env $(RUNENV) $(NICE) $(RUNNER) --limit $(CRON_LIMIT) >> /var/log/detection.log 2>&1 && $(PY) $(PREFIX)/build_index.py --detections $(DETECTIONS) >> /var/log/detection.log 2>&1' \
 	  '30 2 * * * $(shell whoami) DETECTIONS=$(DETECTIONS) RECORDINGS=$(RECORDINGS) $(PREFIX)/prune_detections.sh >> /var/log/detection.log 2>&1' \
 	  | sudo tee /etc/cron.d/detection >/dev/null
 	sudo chmod 644 /etc/cron.d/detection

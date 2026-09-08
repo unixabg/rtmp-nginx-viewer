@@ -328,7 +328,39 @@ which is authoritative — mtime drifts if files are ever copied or touched.
 | `--from` | inclusive lower bound: `YYYY-MM-DD` or `'YYYY-MM-DD HH:MM[:SS]'` |
 | `--to` | **exclusive** upper bound, so `--from 2026-09-05 --to 2026-09-06` is one clean day |
 | `--force` | reprocess files that already have manifests — deletes them (and their thumbnails) first, scoped to the selection only |
+| `--limit N` | process at most N files this run (newest first) |
 | `--dry-run` | print the file list and exit |
+
+### Keeping a scheduled sweep bounded
+
+An unfiltered sweep with a large history is a trap: it holds the `flock` for
+hours, every later tick is skipped, and fresh recordings queue behind days of
+backlog. Narrowing the time window is the obvious answer but has its own
+failure mode — if a run ever outlasts the window, files age past `--from` and
+are **never** processed, silently.
+
+`--limit` solves it properly. Files are ordered newest first, so a capped run
+always takes fresh recordings before history:
+
+```
+/opt/detection/run_detection.sh --limit 40
+```
+
+Each run does at most 40 files; new footage is never starved, and leftover
+capacity chips away at the backlog. Size the limit above your arrival rate
+(cameras × files per interval) or the backlog will never shrink — if
+`already done` stops growing between runs, raise `--limit` or `JOBS`.
+
+Backfilling history stays an explicit, separate decision:
+
+```
+# deliberately work through the backlog, in a window you choose
+./run_detection.sh --from 2026-09-01 --to 2026-09-03
+```
+
+Ordering uses the timestamp in the **filename**, not mtime — mtime is when
+the bytes last changed, which diverges the moment a file is copied, restored
+or touched.
 
 Through `make`, `SINCE=` gives a **relative** window instead of an absolute
 date, computed when the recipe runs (so it stays correct from cron):

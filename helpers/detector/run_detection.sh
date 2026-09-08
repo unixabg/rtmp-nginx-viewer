@@ -22,6 +22,12 @@
 #             accepts YYYY-MM-DD or 'YYYY-MM-DD HH:MM[:SS]'
 #   --force   reprocess files that already have manifests (deletes them
 #             first). Use after changing a camera's rules in cameras.json.
+#   --limit N process at most N files this run. Files are ordered NEWEST
+#             FIRST, so fresh recordings are always taken before backlog:
+#             a scheduled sweep stays bounded and can never be monopolised
+#             by history, while spare capacity still chips away at it.
+#             Size it above your arrival rate (cameras x files-per-run) or
+#             the backlog will never shrink.
 #   --dry-run list what would be processed and exit
 #
 # Resumable by construction:
@@ -52,6 +58,7 @@ FROM_TS=""      # YYYYMMDDHHMMSS, inclusive
 TO_TS=""        # YYYYMMDDHHMMSS, exclusive
 FORCE=0
 DRYRUN=0
+LIMIT=0        # 0 = no cap
 
 # Normalize 'YYYY-MM-DD[ HH:MM[:SS]]' -> YYYYMMDDHHMMSS so timestamps compare
 # as plain integers. A bare date becomes midnight, which is why --to is
@@ -78,6 +85,7 @@ while [[ $# -gt 0 ]]; do
     --from)    FROM_TS=$(norm_ts "$2"); shift 2 ;;
     --to)      TO_TS=$(norm_ts "$2"); shift 2 ;;
     --force)   FORCE=1; shift ;;
+    --limit)   LIMIT="$2"; shift 2 ;;
     --dry-run) DRYRUN=1; shift ;;
     -h|--help) sed -n '2,30p' "$0"; exit 0 ;;
     *) echo "unknown arg: $1" >&2; exit 2 ;;
@@ -97,19 +105,15 @@ NAME_GLOB='*.mp4'
 [[ -n "$CAMERA" ]] && NAME_GLOB="${CAMERA%.mp4}*.mp4"
 
 mapfile -t CANDIDATES < <(
-  find "$RECORDINGS" -type f -name "$NAME_GLOB" -mmin +"$MIN_AGE_MIN" \
-    -printf '%T@ %p\n' | sort -rn | cut -d' ' -f2-
+  find "$RECORDINGS" -type f -name "$NAME_GLOB" -mmin +"$MIN_AGE_MIN" -print
 )
 
 # Time-range filter on the filename's trailing -YYYYMMDD-HHMMSS. Files whose
 # names don't carry a parseable timestamp are kept when no range was asked
 # for, and skipped when one was (we can't place them in time).
-FILES=()
+KEYED=()
 UNDATED=0
 for f in "${CANDIDATES[@]}"; do
-  if [[ -z "$FROM_TS" && -z "$TO_TS" ]]; then
-    FILES+=("$f"); continue
-  fi
   # Take the LAST two dash-separated fields (date, time) rather than a
   # leftmost regex match - names like Camera32-1788648910-20260905-175510
   # contain an epoch field whose digits would otherwise match first.
@@ -118,12 +122,21 @@ for f in "${CANDIDATES[@]}"; do
   if [[ $yyyymmdd =~ ^[0-9]{8}$ && $hhmmss =~ ^[0-9]{6}$ ]]; then
     ts="${yyyymmdd}${hhmmss}"
   else
-    UNDATED=$((UNDATED + 1)); continue
+    # No timestamp in the name: keep it only when no range was asked for,
+    # and sort it last (key 0) since we can't place it in time.
+    UNDATED=$((UNDATED + 1))
+    [[ -n "$FROM_TS" || -n "$TO_TS" ]] && continue
+    KEYED+=("00000000000000 $f"); continue
   fi
   [[ -n "$FROM_TS" && "$ts" < "$FROM_TS" ]] && continue
   [[ -n "$TO_TS"   && ! "$ts" < "$TO_TS"  ]] && continue
-  FILES+=("$f")
+  KEYED+=("$ts $f")
 done
+
+# Newest first, by the timestamp IN THE NAME rather than mtime: mtime is the
+# time the bytes last changed, which diverges the moment a file is copied,
+# restored, or touched. The name is what the recorder meant.
+mapfile -t FILES < <(printf '%s\n' "${KEYED[@]}" | sort -rn | cut -d' ' -f2-)
 
 sel="all cameras"; [[ -n "$CAMERA" ]] && sel="camera glob '$CAMERA'"
 rng="all time"
@@ -144,6 +157,29 @@ if [[ $FORCE -eq 1 && ${#FILES[@]} -gt 0 ]]; then
 fi
 
 [[ ${#FILES[@]} -eq 0 ]] && { echo "nothing to do"; exit 0; }
+
+# Drop files that already have a manifest BEFORE handing the list to
+# parallel. The worker checks this too, but only after paying a python
+# start-up and an OpenCV import (~0.3s each) to reach the same conclusion —
+# which on a 10k-file tree is ~25 minutes of pure skipping per sweep. A
+# shell test costs a stat, so an unfiltered sweep stays cheap and there is
+# no need to keep a --from window narrow enough to finish in time.
+if [[ $FORCE -eq 0 ]]; then
+  TODO=()
+  for f in "${FILES[@]}"; do
+    rel=${f#"$RECORDINGS"/}
+    [[ -e "$DETECTIONS/$rel.json" ]] || TODO+=("$f")
+  done
+  skipped=$(( ${#FILES[@]} - ${#TODO[@]} ))
+  [[ $skipped -gt 0 ]] && echo "already done: $skipped"
+  FILES=("${TODO[@]}")
+  [[ ${#FILES[@]} -eq 0 ]] && { echo "nothing to do"; exit 0; }
+fi
+
+if [[ $LIMIT -gt 0 && ${#FILES[@]} -gt $LIMIT ]]; then
+  echo "limit: taking the newest $LIMIT of ${#FILES[@]} pending"
+  FILES=("${FILES[@]:0:$LIMIT}")
+fi
 echo "candidate files: ${#FILES[@]}"
 
 if [[ $DRYRUN -eq 1 ]]; then
