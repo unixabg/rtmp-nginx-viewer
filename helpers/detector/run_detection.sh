@@ -98,6 +98,12 @@ done
 
 mkdir -p "$DETECTIONS"
 
+# Timestamped banners. These live in the script rather than the cron line so
+# that interactive runs are labelled too, and so cron's % escaping never has
+# to wrap a date command.
+RUN_START=$(date +%s)
+echo "=== run started $(date '+%Y-%m-%d %H:%M:%S') ==="
+
 # Eligible = closed mp4s old enough to be safely readable, newest first so the
 # most recent footage gets detections soonest. The manifest-exists check lives
 # in the worker, so files already done cost only a fork.
@@ -136,7 +142,13 @@ done
 # Newest first, by the timestamp IN THE NAME rather than mtime: mtime is the
 # time the bytes last changed, which diverges the moment a file is copied,
 # restored, or touched. The name is what the recorder meant.
-mapfile -t FILES < <(printf '%s\n' "${KEYED[@]}" | sort -rn | cut -d' ' -f2-)
+# The guard matters: `printf '%s\n' "${empty[@]}"` still prints one newline,
+# which would become a phantom empty filename and crash a worker.
+if [[ ${#KEYED[@]} -eq 0 ]]; then
+  FILES=()
+else
+  mapfile -t FILES < <(printf '%s\n' "${KEYED[@]}" | sort -rn | cut -d' ' -f2-)
+fi
 
 sel="all cameras"; [[ -n "$CAMERA" ]] && sel="camera glob '$CAMERA'"
 rng="all time"
@@ -156,7 +168,9 @@ if [[ $FORCE -eq 1 && ${#FILES[@]} -gt 0 ]]; then
   echo "force: cleared $n existing manifest(s)"
 fi
 
-[[ ${#FILES[@]} -eq 0 ]] && { echo "nothing to do"; exit 0; }
+[[ ${#FILES[@]} -eq 0 ]] && {
+  echo "nothing to do"
+  echo "=== run finished $(date '+%Y-%m-%d %H:%M:%S') | nothing to do ==="; exit 0; }
 
 # Drop files that already have a manifest BEFORE handing the list to
 # parallel. The worker checks this too, but only after paying a python
@@ -173,7 +187,9 @@ if [[ $FORCE -eq 0 ]]; then
   skipped=$(( ${#FILES[@]} - ${#TODO[@]} ))
   [[ $skipped -gt 0 ]] && echo "already done: $skipped"
   FILES=("${TODO[@]}")
-  [[ ${#FILES[@]} -eq 0 ]] && { echo "nothing to do"; exit 0; }
+  [[ ${#FILES[@]} -eq 0 ]] && {
+    echo "nothing to do"
+    echo "=== run finished $(date '+%Y-%m-%d %H:%M:%S') | nothing new ==="; exit 0; }
 fi
 
 if [[ $LIMIT -gt 0 && ${#FILES[@]} -gt $LIMIT ]]; then
@@ -203,3 +219,13 @@ fi
 printf '%s\n' "${FILES[@]}" | "${PAR[@]}" \
   "$PYBIN" "$WORKER" --input {} \
     --input-root "$RECORDINGS" --output-root "$DETECTIONS"
+PAR_RC=$?
+
+RUN_END=$(date +%s); ELAPSED=$((RUN_END - RUN_START))
+printf '=== run finished %s | %d file(s) in %dm%02ds' \
+  "$(date '+%Y-%m-%d %H:%M:%S')" "${#FILES[@]}" $((ELAPSED / 60)) $((ELAPSED % 60))
+[[ ${#FILES[@]} -gt 0 && $ELAPSED -gt 0 ]] && \
+  printf ' (%.1fs/file)' "$(echo "$ELAPSED ${#FILES[@]}" | awk '{printf "%.1f", $1/$2}')"
+[[ $PAR_RC -ne 0 ]] && printf ' | %d job(s) failed' "$PAR_RC"
+printf ' ===\n'
+exit $PAR_RC

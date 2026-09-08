@@ -16,6 +16,8 @@
 #   30 2 * * *  detector  /opt/detection/prune_detections.sh
 set -euo pipefail
 
+echo "=== prune started $(date '+%Y-%m-%d %H:%M:%S') ==="
+
 DETECTIONS=${DETECTIONS:-/var/detections}
 RECORDINGS=${RECORDINGS:-/mnt/recordings}
 THUMB_DAYS=${THUMB_DAYS:-30}
@@ -37,4 +39,4 @@ done
 
 # 4. Empty directories left behind
 find "$DETECTIONS" -mindepth 1 -type d -empty -delete
-echo "prune complete: $(du -sh "$DETECTIONS" | cut -f1) in $DETECTIONS"
+echo "=== prune finished $(date '+%Y-%m-%d %H:%M:%S') | $(du -sh "$DETECTIONS" | cut -f1) in $DETECTIONS ==="

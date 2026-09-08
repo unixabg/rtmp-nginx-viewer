@@ -28,6 +28,7 @@ import argparse
 import json
 import re
 import sys
+import time
 from collections import defaultdict
 from pathlib import Path
 
@@ -141,7 +142,8 @@ def main():
     (index_dir / "days.json").write_text(json.dumps(days_out,
                                                     separators=(",", ":")))
     total = sum(d["tracks"] for d in days_out)
-    print(f"index: {len(days_out)} day(s), {total} track(s), "
+    print(f"index {time.strftime('%Y-%m-%d %H:%M:%S')}: "
+          f"{len(days_out)} day(s), {total} track(s), "
           f"{rebuilt} shard(s) rebuilt"
           + (f", {unparsed} manifest(s) with unparseable names" if unparsed else ""))
     return 0
