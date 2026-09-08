@@ -400,7 +400,7 @@ def process(input_path: Path, input_root: Path, output_root: Path,
     # Timing breakdown. Decode vs inference is the number that tells you
     # whether a faster model (or a GPU) would actually help this machine,
     # or whether it is already bottlenecked on pulling frames off disk.
-    t_decode = t_infer = t_gate = 0.0
+    t_decode = t_infer = t_gate = t_warmup = 0.0
     frame_total = cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0
 
     while True:
@@ -435,8 +435,16 @@ def process(input_path: Path, input_root: Path, output_root: Path,
 
         _i = time.perf_counter()
         dets = detector.detect(frame)
-        t_infer += time.perf_counter() - _i
+        _took = time.perf_counter() - _i
         inferred += 1
+        # The first inference in a process also pays lazy model compilation
+        # (OpenVINO in particular can spend seconds there). Counting it in
+        # the average makes a file with few inferences look catastrophically
+        # slow, so record it separately and average only steady-state calls.
+        if inferred == 1:
+            t_warmup = _took
+        else:
+            t_infer += _took
         if not dets:
             continue
 
@@ -493,11 +501,14 @@ def process(input_path: Path, input_root: Path, output_root: Path,
         "decode_sec": round(t_decode, 2),
         "motion_gate_sec": round(t_gate, 2),
         "inference_sec": round(t_infer, 2),
+        # First call only: model load/compile, paid once per file because
+        # each file is its own process. Excluded from ms_per_inference.
+        "warmup_sec": round(t_warmup, 2),
         "thumbs_sec": round(t_thumb, 2),
         "frames_sampled": sampled,
         "frames_inferred": inferred,
-        "ms_per_inference": (round(t_infer * 1000 / inferred, 1)
-                             if inferred else None),
+        "ms_per_inference": (round(t_infer * 1000 / (inferred - 1), 1)
+                             if inferred > 1 else None),
     }
     manifest = {
         "source": str(input_path.relative_to(input_root)),
@@ -534,7 +545,9 @@ def process(input_path: Path, input_root: Path, output_root: Path,
           + (f" for {timing['video_sec']}s video = {rt}x realtime" if rt else "")
           + f" | decode {timing['decode_sec']}s, gate {timing['motion_gate_sec']}s, "
           f"infer {timing['inference_sec']}s"
-          + (f" ({inferred} @ {timing['ms_per_inference']}ms)" if inferred else ""))
+          + (f", warmup {timing['warmup_sec']}s" if t_warmup else "")
+          + (f" ({inferred} @ {timing['ms_per_inference']}ms)"
+             if timing['ms_per_inference'] else f" ({inferred} inference)"))
     return 0
 
 

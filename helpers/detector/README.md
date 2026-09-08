@@ -509,8 +509,8 @@ is what you need when rolling this out to hardware of varying capability:
 "timing": {
   "wall_sec": 13.4, "video_sec": 300.0, "realtime_factor": 22.4,
   "decode_sec": 3.2, "motion_gate_sec": 0.4, "inference_sec": 8.9,
-  "thumbs_sec": 0.3, "frames_sampled": 150, "frames_inferred": 40,
-  "ms_per_inference": 96.4
+  "warmup_sec": 2.4, "thumbs_sec": 0.3,
+  "frames_sampled": 150, "frames_inferred": 40, "ms_per_inference": 96.4
 },
 "host": { "name": "nvr-viewer", "model": "/opt/detection/yolo11n_openvino_model" }
 ```
@@ -518,6 +518,12 @@ is what you need when rolling this out to hardware of varying capability:
 `realtime_factor` is the headline number: 22.4 means a 5-minute recording
 took 13 seconds, so **one worker keeps up with roughly 22 cameras** of
 continuous recording. Multiply by your job count for the box's capacity.
+
+`warmup_sec` is the first inference only, which also pays model load and
+compilation — OpenVINO can spend seconds there. Because each file is its own
+process, that cost is paid **once per file**, so it matters more as segments
+get shorter. It is excluded from `ms_per_inference`, which would otherwise
+make a quiet file with two inferences look catastrophically slow.
 
 The decode/inference split tells you what to fix. Inference-dominated means
 a faster model or a GPU will help. Decode-dominated means it won't — you're

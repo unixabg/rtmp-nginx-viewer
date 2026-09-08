@@ -276,15 +276,16 @@ for m in root.rglob('*.json'):
 if not by:
     print('no timed manifests yet' + (' (%d predate timing; reprocess with --force to measure)'%old if old else '')); raise SystemExit
 def med(v): return round(statistics.median(v),1) if v else None
-print('%-18s %-34s %6s %8s %9s %9s %7s'%('host','model','files','wall_s','xRealtime','infer_ms','decode%'))
-print('-'*100)
+print('%-16s %-30s %6s %8s %9s %9s %8s %7s'%('host','model','files','wall_s','xRealtime','infer_ms','warmup_s','decode%'))
+print('-'*104)
 for (host,model),ts in sorted(by.items()):
     rt=[t['realtime_factor'] for t in ts if t.get('realtime_factor')]
     wall=[t['wall_sec'] for t in ts]
     ips=[t['ms_per_inference'] for t in ts if t.get('ms_per_inference')]
     dec=[100*t['decode_sec']/t['wall_sec'] for t in ts if t.get('wall_sec')]
-    print('%-18s %-34s %6d %8s %9s %9s %6s%%'%(host[:18], pathlib.Path(model).name[:34],
-          len(ts), med(wall), med(rt), med(ips), med(dec)))
+    wu=[t['warmup_sec'] for t in ts if t.get('warmup_sec')]
+    print('%-16s %-30s %6d %8s %9s %9s %8s %6s%%'%(host[:16], pathlib.Path(model).name[:30],
+          len(ts), med(wall), med(rt), med(ips) or '-', med(wu) or '-', med(dec)))
 print()
 allrt=[t['realtime_factor'] for ts in by.values() for t in ts if t.get('realtime_factor')]
 if allrt:
