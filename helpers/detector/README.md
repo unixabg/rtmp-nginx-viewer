@@ -450,8 +450,11 @@ correctly. Cost is bounded at video-length ÷ keepalive extra inferences —
 ten per 5-minute recording at the default.
 
 **`stationary`** separates a car driving past from a car sitting in the lot:
-it's true when the box centre never wandered more than a quarter of the
-box's own size over the track's life. Normalizing by box size is what lets
+it's true when the 80th-percentile distance from the track's median position
+stays under a quarter of the box's own size. Percentile and median rather
+than maximum and first sighting: a detector will occasionally return one
+shifted or resized box for a perfectly still object, and a max-based test
+lets that single frame flip the whole track to "moving". Normalizing by box size is what lets
 one threshold work for both a car filling the frame and a person far down a
 driveway. Filter these out for "what happened" browsing, or keep them for
 "what's been sitting there for three hours".

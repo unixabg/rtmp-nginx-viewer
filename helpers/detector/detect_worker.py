@@ -321,18 +321,36 @@ class Tracker:
 
 
 def is_stationary(tr, frac=STATIONARY_FRAC):
-    """True if the box centre never wandered far relative to its own size.
+    """True if the box stayed put, judged robustly.
 
-    Normalizing by box size is what lets one threshold serve both a car
-    filling the frame and a person far down a driveway.
+    Measures each sighting's distance from the track's MEDIAN centre, not
+    its first (which may itself be a bad frame), and asks whether the 80th
+    percentile is small — not the maximum. A detector will occasionally
+    return one shifted or resized box for a perfectly stationary object;
+    with a max-based test that single frame flips the whole track to
+    "moving", which is exactly what happened to parked cars in a garage.
+
+    Distances are normalized by the median box diagonal, so one threshold
+    serves both a car filling the frame and a person far down a driveway.
     """
     cs = tr["centres"]
     if len(cs) < 2:
         return False
-    ref = sum(tr["diags"]) / len(tr["diags"])
-    x0, y0 = cs[0]
-    worst = max(((cx - x0) ** 2 + (cy - y0) ** 2) ** 0.5 for cx, cy in cs)
-    return (worst / ref) < frac
+    ref = _median(tr["diags"])
+    mx = _median([c[0] for c in cs])
+    my = _median([c[1] for c in cs])
+    dists = sorted(((cx - mx) ** 2 + (cy - my) ** 2) ** 0.5 for cx, cy in cs)
+    # 80th percentile: tolerate up to a fifth of sightings being outliers.
+    idx = max(0, int(round(0.8 * (len(dists) - 1))))
+    return (dists[idx] / ref) < frac
+
+
+def _median(vals):
+    s = sorted(vals)
+    n = len(s)
+    if n == 0:
+        return 1.0
+    return s[n // 2] if n % 2 else (s[n // 2 - 1] + s[n // 2]) / 2.0
 
 
 def motion_score(prev_gray, gray):
