@@ -239,6 +239,7 @@ Per-rule keys (only `classes` is required; the rest inherit from `default`):
 | `conf` | confidence threshold; raise it if a scene throws false positives |
 | `min_area` | motion-gate px²; raise for cameras with trees/rain/traffic |
 | `interval` | seconds between sampled frames; lower for doors and driveways |
+| `keepalive` | seconds between forced looks in a still scene (default 30, 0 = off) |
 
 Useful COCO classes: `person`, `bicycle`, `car`, `motorcycle`, `bus`,
 `truck`, `cat`, `dog`, `bird`, `backpack`, `handbag`, `suitcase`.
@@ -440,6 +441,14 @@ track 1, a car, best seen at 0 s — so an image and its manifest entry are
 obviously the same object. One image per track (its highest-confidence
 sighting) rather than one per frame.
 
+**`keepalive`** exists because of a subtlety: in a dead-still scene — a
+garage, an empty lot at night — the motion gate suppresses everything, so a
+parked car is detected once and can never be judged stationary, since one
+position shows no displacement. Every `keepalive` seconds the worker looks
+anyway, so persistent objects accumulate sightings and get classified
+correctly. Cost is bounded at video-length ÷ keepalive extra inferences —
+ten per 5-minute recording at the default.
+
 **`stationary`** separates a car driving past from a car sitting in the lot:
 it's true when the box centre never wandered more than a quarter of the
 box's own size over the track's life. Normalizing by box size is what lets
@@ -453,7 +462,11 @@ lands near where that track's recent velocity predicts it should be
 (`TRACK_MAX_MOVE`, in box-diagonal units). The prediction step matters
 because at 2-second sampling a fast car moves further than its own width
 between frames, so overlap alone would fragment it into a track per frame.
-A track closes after `TRACK_MAX_GAP_SEC` unseen. These constants live at the
+A track closes after `TRACK_MAX_GAP_OBS` consecutive **inferred** frames
+without a match (plus an absolute `TRACK_MAX_GAP_SEC` cap so unrelated
+objects never merge). Counting observations rather than seconds matters
+because the gate can suppress inference for minutes: a gated frame is not
+evidence that an object left, so it must not age a track out. These constants live at the
 top of `detect_worker.py`.
 
 Known limits:

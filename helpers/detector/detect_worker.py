@@ -65,7 +65,17 @@ THUMB_MAX_W = 640
 # many sampled frames is one event, not dozens. Association is IoU-based
 # against the previous sighting: same label + overlapping box = same object.
 TRACK_IOU = 0.3          # min overlap to call it the same object
-TRACK_MAX_GAP_SEC = 6.0  # close a track after this long unseen (occlusion)
+# A track closes after this many consecutive INFERRED frames without a match.
+# Counting observations rather than seconds matters because the motion gate
+# can suppress inference for minutes: gated frames are not evidence that an
+# object left, so they must not age a track out.
+TRACK_MAX_GAP_OBS = 3
+TRACK_MAX_GAP_SEC = 600.0  # hard cap, so unrelated objects never merge
+# In a still scene the gate suppresses everything, so a parked car is seen
+# once and can't be judged stationary (one position shows no displacement).
+# Run inference anyway this often, so persistent objects keep being observed.
+# 0 disables. Cost is bounded: video_length / keepalive extra inferences.
+KEEPALIVE_SEC = 30.0
 # With sampled frames, a fast object can move further than its own width
 # between samples, so boxes don't overlap and IoU alone fragments the track.
 # Fall back to a centre-distance gate, measured against the position
@@ -225,11 +235,14 @@ class Tracker:
     frame in memory (usually a handful), so memory stays bounded.
     """
 
-    def __init__(self, iou_thresh=TRACK_IOU, max_gap=TRACK_MAX_GAP_SEC):
+    def __init__(self, iou_thresh=TRACK_IOU, max_gap_obs=TRACK_MAX_GAP_OBS,
+                 max_gap_sec=TRACK_MAX_GAP_SEC):
         self.iou_thresh = iou_thresh
-        self.max_gap = max_gap
+        self.max_gap_obs = max_gap_obs
+        self.max_gap_sec = max_gap_sec
         self.active = []
         self.closed = []
+        self.obs = 0          # inferred frames seen so far
         self._next_id = 1
 
     def _new_track(self, det, t, frame):
@@ -238,19 +251,28 @@ class Tracker:
               "conf_max": det["conf"],
               "box_first": det["box"], "box_last": det["box"],
               "centres": [_centre(det["box"])], "diags": [_diag(det["box"])],
-              "times": [t],
+              "times": [t], "last_obs": self.obs,
               "_best_conf": det["conf"], "_best_frame": frame,
               "_best_det": det, "_best_t": t}
         self._next_id += 1
         self.active.append(tr)
 
     def update(self, dets, t, frame):
-        """Feed one sampled frame's detections, at video time t (seconds)."""
-        # Retire tracks unseen for longer than the gap tolerance.
+        """Feed one inferred frame's detections, at video time t (seconds).
+
+        Call this for EVERY inferred frame, including ones with no
+        detections, so the observation counter stays in step.
+        """
+        self.obs += 1
+        # Retire tracks not matched for max_gap_obs observations, or beyond
+        # the absolute time cap. Gated frames are skipped entirely, so they
+        # never count against a track.
         still = []
         for tr in self.active:
-            (still if t - tr["last_seen"] <= self.max_gap
-             else self.closed).append(tr)
+            gap_obs = self.obs - tr["last_obs"]
+            expired = (gap_obs > self.max_gap_obs
+                       or t - tr["last_seen"] > self.max_gap_sec)
+            (self.closed if expired else still).append(tr)
         self.active = still
 
         used = set()
@@ -283,6 +305,7 @@ class Tracker:
                 best["centres"].append(dc)
                 best["diags"].append(dd)
                 best["times"].append(t)
+                best["last_obs"] = self.obs
                 best["conf_max"] = max(best["conf_max"], det["conf"])
                 if det["conf"] > best["_best_conf"]:
                     best["_best_conf"] = det["conf"]
@@ -368,6 +391,7 @@ def process(input_path: Path, input_root: Path, output_root: Path,
     conf = float(rule.get("conf", CONF_THRESHOLD))
     min_area = int(rule.get("min_area", MOTION_MIN_AREA))
     interval = float(rule.get("interval", FRAME_INTERVAL_SEC))
+    keepalive = float(rule.get("keepalive", KEEPALIVE_SEC))
 
     # An empty class list means "don't analyze this camera at all". Write a
     # manifest anyway so the file counts as done and isn't retried forever.
@@ -401,6 +425,8 @@ def process(input_path: Path, input_root: Path, output_root: Path,
     # whether a faster model (or a GPU) would actually help this machine,
     # or whether it is already bottlenecked on pulling frames off disk.
     t_decode = t_infer = t_gate = t_warmup = 0.0
+    last_infer_ts = -1e9   # forces the first sampled frame to be inferred
+    keepalives = 0
     frame_total = cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0
 
     while True:
@@ -425,15 +451,23 @@ def process(input_path: Path, input_root: Path, output_root: Path,
                            (MOTION_DOWNSCALE_W,
                             int(frame.shape[0] * MOTION_DOWNSCALE_W / frame.shape[1])))
         gray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
+        ts_now = frame_idx / fps
         gated = False
         if prev_gray is not None and motion_score(prev_gray, gray) < min_area:
             gated = True
         prev_gray = gray
         t_gate += time.perf_counter() - _g
+        # Even in a dead-still scene, look every `keepalive` seconds so
+        # persistent objects (a parked car in a garage) are observed more
+        # than once and can therefore be judged stationary.
+        if gated and keepalive > 0 and (ts_now - last_infer_ts) >= keepalive:
+            gated = False
+            keepalives += 1
         if gated:
-            continue  # nothing changed; don't wake the model
+            continue  # nothing changed and not due a look; skip the model
 
         _i = time.perf_counter()
+        last_infer_ts = ts_now
         dets = detector.detect(frame)
         _took = time.perf_counter() - _i
         inferred += 1
@@ -445,12 +479,11 @@ def process(input_path: Path, input_root: Path, output_root: Path,
             t_warmup = _took
         else:
             t_infer += _took
-        if not dets:
-            continue
-
-        ts_sec = round(frame_idx / fps, 2)
-        # Keep the frame only if we might need it as a thumbnail; the tracker
-        # holds at most one frame per active track.
+        ts_sec = round(ts_now, 2)
+        # Feed every inferred frame, including empty ones, so the tracker's
+        # observation counter (which drives track expiry) stays in step.
+        # The frame is kept only if it might become a thumbnail; the tracker
+        # holds at most one per active track.
         tracker.update(dets, ts_sec, frame if save_thumbs else None)
 
     cap.release()
@@ -507,6 +540,7 @@ def process(input_path: Path, input_root: Path, output_root: Path,
         "thumbs_sec": round(t_thumb, 2),
         "frames_sampled": sampled,
         "frames_inferred": inferred,
+        "keepalive_inferences": keepalives,
         "ms_per_inference": (round(t_infer * 1000 / (inferred - 1), 1)
                              if inferred > 1 else None),
     }
