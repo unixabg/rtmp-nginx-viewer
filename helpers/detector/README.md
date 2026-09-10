@@ -413,8 +413,15 @@ Schedule it from cron under `flock` so runs never overlap:
 
 ```
 */10 * * * *  detector  flock -n /run/lock/detect.lock \
-    /opt/detection/run_detection.sh >> /var/log/detection/run.log 2>&1
+    /opt/detection/run_detection.sh >> /var/log/detection.log 2>&1
 ```
+
+`make install-cron` writes this for you, along with a nightly prune and a
+logrotate rule at `/etc/logrotate.d/detection` (daily, 7 kept, compressed).
+
+The rotation uses **copytruncate rather than create**: cron holds the log
+open through `>>` for the whole run, so renaming the file would send writes
+to the rotated copy and lose any run in progress at rotation time.
 
 ## Tracks: one object is one event
 

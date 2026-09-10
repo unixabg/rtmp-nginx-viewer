@@ -33,6 +33,7 @@ NICE        ?= nice -n 15 ionice -c3
 
 # GPU=1 installs CUDA-enabled torch; default is the slim CPU wheel set.
 CRON_LIMIT  ?= 40    # max files per scheduled sweep; newest first
+LOGFILE     ?= /var/log/detection.log
 GPU         ?= 0
 # ACCEL picks the CPU export format: openvino (Intel) or ncnn (ARM).
 ACCEL       ?= openvino
@@ -56,7 +57,7 @@ CONFIG      := cameras.json
 .PHONY: help install install-deps install-scripts install-config model \
         upgrade upgrade-scripts upgrade-deps upgrade-web uninstall purge \
         doctor status run dry-run prune index web classes bench \
-        install-cron uninstall-cron test clean
+        install-cron install-logrotate uninstall-cron test clean
 
 ## help: show this list
 help:
@@ -302,23 +303,43 @@ export BENCH_PY
 prune:
 	DETECTIONS=$(DETECTIONS) RECORDINGS=$(RECORDINGS) $(PREFIX)/prune_detections.sh
 
-## install-cron: every 10 min under flock, plus a nightly prune
-install-cron:
+## install-cron: every 10 min under flock, nightly prune, plus log rotation
+install-cron: install-logrotate
 	@echo "==> writing /etc/cron.d/detection"
 	@printf '%s\n' \
 	  'SHELL=/bin/bash' \
 	  'PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin' \
-	  '*/10 * * * * $(shell whoami) flock -n /tmp/detect.lock env $(RUNENV) $(NICE) $(RUNNER) --limit $(CRON_LIMIT) >> /var/log/detection.log 2>&1 && $(PY) $(PREFIX)/build_index.py --detections $(DETECTIONS) >> /var/log/detection.log 2>&1' \
-	  '30 2 * * * $(shell whoami) DETECTIONS=$(DETECTIONS) RECORDINGS=$(RECORDINGS) $(PREFIX)/prune_detections.sh >> /var/log/detection.log 2>&1' \
+	  '*/10 * * * * $(shell whoami) flock -n /tmp/detect.lock env $(RUNENV) $(NICE) $(RUNNER) --limit $(CRON_LIMIT) >> $(LOGFILE) 2>&1 && $(PY) $(PREFIX)/build_index.py --detections $(DETECTIONS) >> $(LOGFILE) 2>&1' \
+	  '30 2 * * * $(shell whoami) DETECTIONS=$(DETECTIONS) RECORDINGS=$(RECORDINGS) $(PREFIX)/prune_detections.sh >> $(LOGFILE) 2>&1' \
 	  | sudo tee /etc/cron.d/detection >/dev/null
 	sudo chmod 644 /etc/cron.d/detection
-	@sudo touch /var/log/detection.log && sudo chown $(shell whoami) /var/log/detection.log
-	@echo "installed. watch it with: tail -f /var/log/detection.log"
+	@sudo touch $(LOGFILE) && sudo chown $(shell whoami) $(LOGFILE)
+	@echo "installed. watch it with: tail -f $(LOGFILE)"
 
-## uninstall-cron: remove the cron entries
+## install-logrotate: keep /var/log/detection.log bounded
+install-logrotate:
+	@echo "==> writing /etc/logrotate.d/detection"
+	@printf '%s\n' \
+	  '$(LOGFILE) {' \
+	  '    daily' \
+	  '    rotate 7' \
+	  '    compress' \
+	  '    delaycompress' \
+	  '    missingok' \
+	  '    notifempty' \
+	  '    # copytruncate, not create: cron holds the log open through >>' \
+	  '    # for the whole run, so a rename would send writes to the' \
+	  '    # rotated file and lose any run in progress at rotation time.' \
+	  '    copytruncate' \
+	  '}' \
+	  | sudo tee /etc/logrotate.d/detection >/dev/null
+	sudo chmod 644 /etc/logrotate.d/detection
+	@echo "    check it with: logrotate -d /etc/logrotate.d/detection"
+
+## uninstall-cron: remove the cron entries and log rotation
 uninstall-cron:
-	sudo rm -f /etc/cron.d/detection
-	@echo "cron entries removed."
+	sudo rm -f /etc/cron.d/detection /etc/logrotate.d/detection
+	@echo "cron entries and logrotate rule removed."
 
 ## test: end-to-end check on one real recording (FILE=... to choose)
 test:
