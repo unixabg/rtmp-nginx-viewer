@@ -45,6 +45,7 @@ upgrade or someone edited it in place.
 | `/opt/detection` | `cameras.json` per-camera rules, plus any `env-*.sh` wrappers. Venv and models excluded, see below |
 | `/etc/detection` | `nodes.txt` for multi-node runs |
 | `/etc/cron.d/detection` | Sweep + nightly prune schedule written by `make install-cron` |
+| `/etc/logrotate.d/detection` | Rotation for `detection.log`, written by `make install-logrotate` |
 | `/etc/exports` | Read-only NFS export of recordings to the detection nodes |
 
 Paths that don't exist on a given host are silently skipped, so the same
@@ -72,6 +73,13 @@ Also not included: recordings, thumbnails, and detection output
 (`/var/detections`, `/videos/detections`). This backs up configuration only —
 enough to rebuild a server, not to restore footage. Detection manifests and
 thumbnails are regenerable by re-running the worker over the recordings.
+
+Note that `/etc/cron.d/detection` and `/etc/logrotate.d/detection` are
+*generated* by the detector's Makefile from `LOGFILE`, `PREFIX`, `RECORDINGS`,
+`DETECTIONS`, `CRON_LIMIT` and friends — they aren't files in git. If a host
+was set up with anything other than the defaults, these two archived copies are
+the only record of what was chosen. Reinstalling with `make install-cron` and
+no variables will quietly produce different files.
 
 As a backstop, any archive coming back at or above `WARN_MB` (default 16) is
 flagged in the output. A config-only archive is normally well under a

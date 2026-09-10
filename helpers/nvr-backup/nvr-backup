@@ -28,7 +28,7 @@
 #   SSH_OPTS      extra ssh arguments   (default connect timeout 15s)
 #   WARN_MB       warn above this size  (default 16)
 
-VERSION="1.1.0"
+VERSION="1.1.1"
 
 set -uo pipefail
 
@@ -60,6 +60,7 @@ REMOTE_PATHS=(
     /opt/detection
     /etc/detection
     /etc/cron.d/detection
+    /etc/logrotate.d/detection
     /etc/exports
 )
 
