@@ -12,6 +12,7 @@
 #   nvr-backup -n                   # dry run, show what would happen
 #   nvr-backup -j 8                 # 8 hosts in parallel (default 4)
 #   nvr-backup -l                   # list configured hosts and exit
+#   nvr-backup -p                   # list the paths that get backed up
 #   nvr-backup -V                   # print version and exit
 #
 # Hosts file: ~/.config/nvr-backup/hosts
@@ -25,8 +26,9 @@
 #   BACKUP_ROOT   where archives land   (default ~/backups/nvr)
 #   KEEP          archives kept per host (default 14)
 #   SSH_OPTS      extra ssh arguments   (default connect timeout 15s)
+#   WARN_MB       warn above this size  (default 16)
 
-VERSION="1.0.0"
+VERSION="1.1.0"
 
 set -uo pipefail
 
@@ -41,16 +43,54 @@ JOBS="${JOBS:-4}"
 DRYRUN=0
 
 # --- Paths pulled from each server ----------------------------------------
+# Missing paths are skipped, so the same list works on a viewer box, a
+# detection box, or a host running only part of the stack.
 REMOTE_PATHS=(
+    # core viewer
     /etc/nginx
     /etc/rtsp-to-rtmp
     /etc/cron.d/rtmp-nginx-viewer
     /etc/fstab
+
+    # mergerfs tiered storage helper
     /opt/videos-mover
+    /etc/logrotate.d/videos-mover
+
+    # detector helper
+    /opt/detection
+    /etc/detection
+    /etc/cron.d/detection
+    /etc/exports
 )
+
+# --- Excluded from every path above ----------------------------------------
+# /opt/detection holds a multi-gigabyte venv and regenerable model exports
+# next to the config you actually care about. These patterns keep the archive
+# to configuration only. Patterns are unanchored, so they match at any depth.
+TAR_EXCLUDES=(
+    'venv'
+    '__pycache__'
+    '*.pyc'
+    '*.pt'
+    '*.onnx'
+    '*_openvino_model'
+    '*_ncnn_model'
+    '*.log'
+    '*.log.*'
+)
+
+# Warn if an archive comes back larger than this. Config-only archives are
+# well under a megabyte; anything big means a path is pulling in data.
+WARN_MB="${WARN_MB:-16}"
 # ---------------------------------------------------------------------------
 
 STAMP="$(date +%Y%m%d-%H%M%S)"
+
+EXCLUDE_ARGS=""
+for _x in "${TAR_EXCLUDES[@]}"; do
+    EXCLUDE_ARGS+=" --exclude='$_x'"
+done
+unset _x
 
 c_red=$'\033[31m'; c_grn=$'\033[32m'; c_yel=$'\033[33m'; c_dim=$'\033[2m'; c_off=$'\033[0m'
 [ -t 1 ] || { c_red=""; c_grn=""; c_yel=""; c_dim=""; c_off=""; }
@@ -62,12 +102,17 @@ ok()   { printf '%s %s%s%s\n' "$(date '+%H:%M:%S')" "$c_grn" "$*" "$c_off"; }
 warn() { printf '%s %s%s%s\n' "$(date '+%H:%M:%S')" "$c_yel" "$*" "$c_off"; }
 err()  { printf '%s %s%s%s\n' "$(date '+%H:%M:%S')" "$c_red" "$*" "$c_off" >&2; }
 
-while getopts ":j:f:nlhV" opt; do
+while getopts ":j:f:nlphV" opt; do
     case "$opt" in
         j) JOBS="$OPTARG" ;;
         f) HOSTS_FILE="$OPTARG" ;;
         n) DRYRUN=1 ;;
         l) LIST_ONLY=1 ;;
+        p) printf 'paths:\n'
+           printf '  %s\n' "${REMOTE_PATHS[@]}"
+           printf 'excludes:\n'
+           printf '  %s\n' "${TAR_EXCLUDES[@]}"
+           exit 0 ;;
         h) usage 0 ;;
         V) echo "nvr-backup $VERSION"; exit 0 ;;
         \?) err "Unknown option -$OPTARG"; usage 1 ;;
@@ -116,9 +161,11 @@ backup_host() {
 
     # Remote side: keep only paths that exist, then tar them to stdout.
     # sudo -n so it fails fast rather than hanging on a password prompt.
+    # Exclude patterns are single-quoted so the remote shell can't glob them
+    # against the login directory before tar ever sees them.
     # shellcheck disable=SC2029
     if ! ssh $SSH_OPTS "$host" "sudo -n tar -czf - --absolute-names \
-            --warning=no-file-changed --ignore-failed-read \
+            --warning=no-file-changed --ignore-failed-read $EXCLUDE_ARGS \
             \$(for p in ${REMOTE_PATHS[*]}; do [ -e \"\$p\" ] && printf '%s ' \"\$p\"; done)" \
             > "$archive" 2>"$archive.err"; then
         err "FAIL $host — $(tr '\n' ' ' < "$archive.err" | cut -c1-160)"
@@ -136,6 +183,15 @@ backup_host() {
 
     chmod 600 "$archive"
     ok "OK   $host — $(du -h "$archive" | cut -f1) -> $archive"
+
+    # Sanity check: a config-only archive is tiny. A fat one means a path in
+    # REMOTE_PATHS is dragging in recordings, a venv, or model exports.
+    local mb
+    mb=$(du -m "$archive" | cut -f1)
+    if [ "$mb" -ge "$WARN_MB" ]; then
+        warn "     $host — archive is ${mb}MB, over the ${WARN_MB}MB threshold."
+        warn "     Check REMOTE_PATHS/TAR_EXCLUDES: tar -tzf '$archive' | head"
+    fi
 
     # Prune old archives for this host only.
     local old
