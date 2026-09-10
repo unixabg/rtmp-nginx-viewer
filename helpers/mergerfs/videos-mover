@@ -6,31 +6,43 @@
 # Run from cron as root. See helpers/mergerfs/README.md for full setup.
 
 ### --- Configuration -------------------------------------------------------
+#
+# Every setting below can be overridden from the environment, so you do not
+# have to edit this file. Set them in /etc/cron.d/rtmp-nginx-viewer instead
+# and this script stays byte-identical to the one in git, which makes it
+# safe to overwrite on upgrade and easy to diff across a fleet.
+#
+#   # /etc/cron.d/rtmp-nginx-viewer
+#   KEEP_HOURS=48
+#   RETENTION_DAYS=30
+#   0 * * * * root /opt/videos-mover >> /var/log/videos-mover.log 2>&1
+#
+# The values below are the fallbacks used when nothing sets them.
 
 # Branch paths (must match your mergerfs fstab entry)
-SSD=/mnt/cache/videos
-HDD=/mnt/hdd/videos
+SSD="${SSD:-/mnt/cache/videos}"
+HDD="${HDD:-/mnt/hdd/videos}"
 
 # Optional third tier. Leave empty to disable archiving.
-NFS=
+NFS="${NFS:-}"
 
 # Hours of footage to keep on the SSD tier before moving to HDD
-KEEP_HOURS=48
+KEEP_HOURS="${KEEP_HOURS:-48}"
 
 # SSD filesystem usage percent that triggers extra oldest-first eviction
-FILL_LIMIT=75
+FILL_LIMIT="${FILL_LIMIT:-75}"
 
 # Days of footage to keep on the HDD tier before archiving to NFS
 # (only used when NFS is set)
-ARCHIVE_DAYS=30
+ARCHIVE_DAYS="${ARCHIVE_DAYS:-30}"
 
 # Days of footage to keep on the final tier before deletion.
 # Applies to NFS when set, otherwise to the HDD. Empty disables purging.
-RETENTION_DAYS=
+RETENTION_DAYS="${RETENTION_DAYS:-}"
 
 # Lock file. Prevents overlapping runs when a pass takes longer than the
 # cron interval. Set to empty to disable locking (not recommended).
-LOCKFILE=/run/videos-mover.lock
+LOCKFILE="${LOCKFILE:-/run/videos-mover.lock}"
 
 ### --- End configuration ---------------------------------------------------
 
@@ -59,6 +71,39 @@ if [ -n "$LOCKFILE" ] && [ -z "${VIDEOS_MOVER_LOCKED:-}" ]; then
     log "WARNING: flock not found, running without a lock"
 fi
 
+# --- Validate configuration -------------------------------------------------
+# Settings can now come from cron.d, so a typo is somebody else's file. Check
+# them before anything deletes or moves data. RETENTION_DAYS especially: an
+# unnoticed "0" would purge everything older than a day.
+require_int() {
+    case "$2" in
+        ''|*[!0-9]*)
+            log "ERROR: $1 must be a whole number, got '$2' - aborting"
+            exit 1 ;;
+    esac
+}
+
+require_int KEEP_HOURS "$KEEP_HOURS"
+require_int FILL_LIMIT "$FILL_LIMIT"
+
+if [ "$FILL_LIMIT" -lt 1 ] || [ "$FILL_LIMIT" -gt 99 ]; then
+    log "ERROR: FILL_LIMIT must be between 1 and 99, got '$FILL_LIMIT' - aborting"
+    exit 1
+fi
+
+if [ -n "$NFS" ]; then
+    require_int ARCHIVE_DAYS "$ARCHIVE_DAYS"
+fi
+
+if [ -n "$RETENTION_DAYS" ]; then
+    require_int RETENTION_DAYS "$RETENTION_DAYS"
+    if [ "$RETENTION_DAYS" -lt 1 ]; then
+        log "ERROR: RETENTION_DAYS=0 would purge nearly everything." \
+            "Leave it empty to disable purging - aborting"
+        exit 1
+    fi
+fi
+
 SRC="$SSD/recordings"
 DST="$HDD/recordings"
 
@@ -82,6 +127,12 @@ move_file() {
     mkdir -p "$3/$(dirname "$1")"
     rsync -a --remove-source-files "$2/$1" "$3/$1"
 }
+
+# Record the settings this run actually used. With config living in cron.d,
+# the log is the only place that shows what was in effect at the time.
+if [ -n "$NFS" ]; then _archive="$ARCHIVE_DAYS"; else _archive="off"; fi
+log "config: KEEP_HOURS=$KEEP_HOURS FILL_LIMIT=$FILL_LIMIT" \
+    "ARCHIVE_DAYS=$_archive RETENTION_DAYS=${RETENTION_DAYS:-off}"
 
 # --- Stage 1: age-based move, SSD -> HDD -----------------------------------
 # Never touch files modified in the last 10 minutes; nginx-rtmp may still

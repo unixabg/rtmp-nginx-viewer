@@ -107,7 +107,11 @@ chown root: /opt/videos-mover
 chmod 755 /opt/videos-mover
 ```
 
-Edit the configuration block at the top:
+You should not need to edit it. Every setting reads from the environment
+first and falls back to the default baked into the script, so the tuning
+lives in `/etc/cron.d/rtmp-nginx-viewer` (section 5) rather than in
+`/opt/videos-mover`. That keeps the deployed script byte-identical to the
+one in git - safe to overwrite on upgrade, and easy to diff across a fleet.
 
 | Variable         | Default | Meaning                                                        |
 | ---------------- | ------- | -------------------------------------------------------------- |
@@ -118,6 +122,13 @@ Edit the configuration block at the top:
 | `ARCHIVE_DAYS`   | `30`    | days on the HDD before footage moves to the NFS archive        |
 | `RETENTION_DAYS` | empty   | days on the final tier before deletion, empty disables purging |
 | `LOCKFILE`       | `/run/videos-mover.lock` | single-instance lock, empty disables locking |
+
+The numeric settings are validated before anything moves or deletes. A
+non-numeric value, a `FILL_LIMIT` outside 1-99, or `RETENTION_DAYS=0`
+aborts the run with an error in the log instead of acting on it - worth
+having now that the values live in a file cron parses rather than in the
+script itself. Each run also logs a `config:` line with the values it used,
+so the log shows what was in effect at the time.
 
 How the stages interact: in normal operation `KEEP_HOURS` governs and
 footage moves down after 48 hours. If the cameras outpace the SSD,
@@ -160,12 +171,50 @@ bash -x /opt/videos-mover
 
 Cameras record continuously, so run the mover hourly. A drop-in file under
 `/etc/cron.d/` keeps the schedule deployable alongside the project rather
-than hidden in a personal crontab. Create `/etc/cron.d/rtmp-nginx-viewer`:
+than hidden in a personal crontab.
+
+cron.d files can carry environment assignments as well as schedules, and
+the mover reads its settings from the environment. So this one file holds
+both the schedule and the tuning, and `/opt/videos-mover` never gets
+edited. Create `/etc/cron.d/rtmp-nginx-viewer`:
 
 ```
+# rtmp-nginx-viewer - tiered storage mover
+# Settings below are read by /opt/videos-mover. Anything left out uses the
+# script's built-in default. See helpers/mergerfs/README.md section 4.
+
+#SSD=/mnt/cache/videos
+#HDD=/mnt/hdd/videos
+KEEP_HOURS=48
+FILL_LIMIT=75
+
+# Uncomment to enable the NFS archive tier (section 6)
+#NFS=/mnt/nfs/videos
+#ARCHIVE_DAYS=30
+
+# Uncomment to enable retention purging (section 7). Leave commented out
+# to disable; do not set it to 0.
+#RETENTION_DAYS=30
+
 # run every hour for hot cache on ssd for history
 0 * * * * root /opt/videos-mover >> /var/log/videos-mover.log 2>&1
 ```
+
+Changing retention is now a one-line edit here, with no reload needed -
+cron re-reads the file on the next tick, and the mover logs the values it
+picked up on each run.
+
+Environment lines in cron.d have their own rules:
+
+* Assignments apply to **every** job in that same file, so if you add other
+  entries later, keep in mind they inherit these too.
+* No shell expansion. `KEEP_HOURS=$FOO` is the literal string `$FOO`, not a
+  variable reference, and the mover will reject it as non-numeric.
+* Write values bare - `KEEP_HOURS=48`, not `KEEP_HOURS="48"`. Debian's cron
+  does strip matching quotes, but bare values avoid the question entirely.
+* An assignment must come **before** the job line to apply to it.
+* A commented-out assignment simply falls back to the script default, which
+  is why the optional tiers above are safe to leave commented.
 
 cron.d gotchas, all of which cause the job to be silently skipped:
 
@@ -211,15 +260,17 @@ Then extend the pool line with the archive branch marked **no-create**:
 
 The `=NC` suffix guarantees mergerfs never places new files on the archive
 regardless of policy or how full the other tiers get; existing files on it
-remain fully readable through `/videos`. Create the target directory and
-set the `NFS=` variable in the mover script:
+remain fully readable through `/videos`. Create the target directory:
 
 ```
 mkdir -p /mnt/nfs/videos/recordings
 ```
 
+Then uncomment the archive settings in `/etc/cron.d/rtmp-nginx-viewer`:
+
 ```
 NFS=/mnt/nfs/videos
+ARCHIVE_DAYS=30
 ```
 
 The mover then adds a stage that migrates recordings older than
@@ -233,10 +284,12 @@ the simple fix if archived listings show the wrong owner.
 
 ## 7. Retention
 
-The final tier fills eventually. Set `RETENTION_DAYS` in the mover script
-to delete footage older than N days from the last tier in the chain (the
-NFS archive when configured, otherwise the HDD). Size it from your real
-numbers: total daily footage is roughly
+The final tier fills eventually. Set `RETENTION_DAYS` in
+`/etc/cron.d/rtmp-nginx-viewer` to delete footage older than N days from
+the last tier in the chain (the NFS archive when configured, otherwise the
+HDD). Leave it commented out to disable purging entirely - do not set it to
+`0`, which the mover rejects because it would purge almost everything.
+Size it from your real numbers: total daily footage is roughly
 
 ```
 cameras x bitrate(Mbps) / 8 x 86400 / 1000  GB per day
@@ -252,8 +305,9 @@ nightly purge along the lines of
 #0 2 * * *  www-data  /usr/bin/find /videos/recordings -type f -mtime +30 -delete
 ```
 
-Use one retention mechanism, not both. When enabling `RETENTION_DAYS` in
-the mover, comment out that crontab line - if both are active, the shorter
+Use one retention mechanism, not both. Note both now live in the same
+file, so the conflict is easy to spot: when you uncomment `RETENTION_DAYS`,
+comment out that `find` line - if both are active, the shorter
 value silently wins and footage disappears earlier than either setting
 suggests. (Consolidating into the mover is recommended: one script, one
 log, and each purged file is logged with a `purge:` line.)
@@ -273,6 +327,12 @@ is used as the artifact showing when a camera went down.
   root does), and see the NFS ownership note above for the archive tier.
 * **Which drive is a file actually on?** - `getfattr -n user.mergerfs.relpath`
   works, or simply `ls /mnt/*/videos/recordings/ | grep <file>`.
+* **A setting in cron.d seems to be ignored** - check the `config:` line the
+  mover logs on each run; it shows the values actually in effect. Common
+  causes: the assignment sits below the job line, it is in a different
+  cron.d file, or the value has a stray space (`KEEP_HOURS = 48` is not a
+  valid cron assignment). To test a value without waiting for cron:
+  `KEEP_HOURS=1 /opt/videos-mover`.
 * **Log shows "another videos-mover is still running"** - a previous run
   overran the cron interval. Occasional lines are normal after enabling
   tiering or during a big archive pass. Continuous lines mean the mover
