@@ -320,6 +320,27 @@ class Tracker:
         return sorted(self.closed, key=lambda tr: (tr["first_seen"], tr["id"]))
 
 
+def stationary_stats(tr):
+    """Numbers behind the stationary decision, kept in the manifest.
+
+    Without these a misclassification is undiagnosable: box_first and
+    box_last can be identical while sightings in between wander, and there
+    is no way to tell from the output which happened.
+    """
+    cs = tr["centres"]
+    ref = _median(tr["diags"])
+    mx = _median([c[0] for c in cs])
+    my = _median([c[1] for c in cs])
+    d = sorted((((cx - mx) ** 2 + (cy - my) ** 2) ** 0.5) / ref for cx, cy in cs)
+    n = len(d)
+    pick = lambda p: d[max(0, min(n - 1, int(round(p * (n - 1)))))]
+    return {"move_p50": round(pick(0.5), 3),
+            "move_p80": round(pick(0.8), 3),
+            "move_max": round(d[-1], 3),
+            "outliers": sum(1 for x in d if x >= STATIONARY_FRAC),
+            "sightings": n}
+
+
 def is_stationary(tr, frac=STATIONARY_FRAC):
     """True if the box stayed put, judged robustly.
 
@@ -524,6 +545,7 @@ def process(input_path: Path, input_root: Path, output_root: Path,
             "stationary": stationary,
             "box_first": tr["box_first"],
             "box_last": tr["box_last"],
+            "motion": stationary_stats(tr),
         }
         # Thumbnail is the track's highest-confidence sighting, named after
         # the track so image and manifest entry are obviously the same thing.
