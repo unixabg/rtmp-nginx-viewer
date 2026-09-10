@@ -130,9 +130,9 @@ move_file() {
 
 # Record the settings this run actually used. With config living in cron.d,
 # the log is the only place that shows what was in effect at the time.
-if [ -n "$NFS" ]; then _archive="$ARCHIVE_DAYS"; else _archive="off"; fi
 log "config: KEEP_HOURS=$KEEP_HOURS FILL_LIMIT=$FILL_LIMIT" \
-    "ARCHIVE_DAYS=$_archive RETENTION_DAYS=${RETENTION_DAYS:-off}"
+    "NFS=${NFS:-off} ARCHIVE_DAYS=$ARCHIVE_DAYS" \
+    "RETENTION_DAYS=${RETENTION_DAYS:-off}"
 
 # --- Stage 1: age-based move, SSD -> HDD -----------------------------------
 # Never touch files modified in the last 10 minutes; nginx-rtmp may still
