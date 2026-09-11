@@ -98,6 +98,15 @@ DECODE_THREADS = int(os.environ.get("DECODE_THREADS", "1"))
 KEYFRAMES = os.environ.get("DECODE_KEYFRAMES", "auto").lower()
 KEYFRAME_MIN_RATIO = 0.9
 GOP_PROBE_SEC = 20
+# Decode frames no wider than this (0 = source resolution). Nothing
+# downstream needs full resolution - the model runs at 640x640 and the
+# motion gate at 480 wide - but a 1440p frame still costs a BGR24
+# conversion and ~11 MB through the pipe. Scaling inside ffmpeg cut
+# decode+convert from 6.5s to 1.3s per 60s 1440p clip. Boxes are scaled
+# back to source coordinates before they reach the manifest, so numbers
+# stay comparable across nodes; thumbnails are cropped from the scaled
+# frame and so are lower resolution (they are 640 wide anyway).
+DECODE_MAX_W = int(os.environ.get("DECODE_MAX_W", "1280"))
 # Denser sampling on GPU nodes. With inference at ~10 ms, sampling more
 # often costs only the motion gate - but an interval below the camera's
 # keyframe spacing gives up keyframe-only decode (below), which is a much
@@ -319,6 +328,18 @@ class FfmpegSource:
         self.interval = interval
         self.t_decode = 0.0
         self.name = "keyframes" if keyframes else ("nvdec" if hw else "ffmpeg")
+        # Scale inside ffmpeg when the source is wider than needed. -2
+        # keeps the aspect ratio and an even height (required by bgr24
+        # conversion of odd-height yuv420p). self.scale maps a box in
+        # decoded coordinates back to source coordinates.
+        self.src_w, self.src_h = self.info["w"], self.info["h"]
+        if DECODE_MAX_W and self.src_w > DECODE_MAX_W:
+            self.out_w = DECODE_MAX_W
+            self.out_h = int(round(self.src_h * DECODE_MAX_W / self.src_w / 2)) * 2
+            self.scale = self.src_w / self.out_w
+        else:
+            self.out_w, self.out_h = self.src_w, self.src_h
+            self.scale = 1.0
         # showinfo logs at info level; "level+" tags every line with its
         # severity so the reader can keep showinfo and real problems and
         # drop the input banner.
@@ -330,7 +351,7 @@ class FfmpegSource:
             # so a 1.999 s GOP still passes a 2.0 s interval), passthrough
             # timing so nothing is duplicated to fill a grid.
             vf = (f"select='isnan(prev_selected_t)+gte(t-prev_selected_t,"
-                 f"{max(interval - 0.1, 0):.3f})',showinfo")
+                 f"{max(interval - 0.1, 0):.3f})'{self._scale_vf()},showinfo")
             vsync = ["-fps_mode", "passthrough"]
         else:
             if hw:
@@ -341,7 +362,7 @@ class FfmpegSource:
                 cmd += ["-c:v", dec]
             else:
                 cmd += ["-threads", str(DECODE_THREADS)]
-            vf = f"fps=1/{interval},showinfo"
+            vf = f"fps=1/{interval}{self._scale_vf()},showinfo"
             vsync = []
         cmd += ["-i", str(path), "-an", "-sn", "-dn", "-vf", vf] + vsync + [
                 "-f", "rawvideo", "-pix_fmt", "bgr24", "pipe:1"]
@@ -353,6 +374,9 @@ class FfmpegSource:
         self._errs = []
         self._reader = threading.Thread(target=self._drain, daemon=True)
         self._reader.start()
+
+    def _scale_vf(self) -> str:
+        return "" if self.scale == 1.0 else f",scale={self.out_w}:{self.out_h}"
 
     def _drain(self):
         for raw in self.proc.stderr:
@@ -366,7 +390,7 @@ class FfmpegSource:
                                          "", line.strip()))
 
     def frames(self):
-        w, h = self.info["w"], self.info["h"]
+        w, h = self.out_w, self.out_h
         nbytes = w * h * 3
         n = 0
         while True:
@@ -418,6 +442,9 @@ class CvSource:
         total = self.cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0
         self.video_sec = round(total / self.fps, 1) if total else None
         self.t_decode = 0.0
+        # OpenCV decodes at source resolution; scaling there would happen
+        # after the expensive part, so there is nothing to gain.
+        self.scale = 1.0
 
     def frames(self):
         idx = 0
@@ -745,8 +772,10 @@ def out_paths(input_path: Path, input_root: Path, output_root: Path):
 
 
 def annotate(frame, dets):
+    """Draw boxes on a frame. Detections carry 'box' in source coordinates
+    and, when the frame was decoded scaled, 'box_scaled' to draw with."""
     for d in dets:
-        x1, y1, x2, y2 = d["box"]
+        x1, y1, x2, y2 = d.get("box_scaled", d["box"])
         cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 220, 0), 2)
         cv2.putText(frame, f'{d["label"]} {d["conf"]:.2f}', (x1, max(y1 - 6, 12)),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 220, 0), 2)
@@ -840,6 +869,15 @@ def process(input_path: Path, input_root: Path, output_root: Path,
         last_infer_ts = ts_now
         dets = detector.detect(frame)
         _took = time.perf_counter() - _i
+        # Frames may have been scaled during decode; report boxes in the
+        # recording's own coordinates so manifests are comparable across
+        # nodes and DECODE_MAX_W settings. Thumbnails keep the scaled
+        # frame and are annotated from the scaled boxes, so annotate()
+        # runs before this - it does not, so scale a copy for drawing.
+        if src.scale != 1.0:
+            for d in dets:
+                d["box_scaled"] = d["box"]
+                d["box"] = [int(round(v * src.scale)) for v in d["box"]]
         inferred += 1
         # The first inference in a process also pays lazy model compilation
         # (OpenVINO in particular can spend seconds there). Counting it in
@@ -899,10 +937,11 @@ def process(input_path: Path, input_root: Path, output_root: Path,
     timing = {
         "wall_sec": round(wall, 2),
         "video_sec": video_sec,
-        # Which decoder produced the frames: nvdec, ffmpeg, or cv2. With a
-        # GPU this is the number to check - a 'cv2' or 'ffmpeg' here on a
-        # CUDA node means the card is only doing inference.
+        # Which decoder produced the frames: keyframes, ffmpeg, nvdec or
+        # cv2 - and at what width, since frames may be scaled during
+        # decode. Boxes in this manifest are always source coordinates.
         "decoder": src.name,
+        "decode_width": getattr(src, "out_w", None),
         # >1 means faster than realtime: 6.7 == one core keeps up with ~6
         # cameras of continuous recording. The headline portability number.
         "realtime_factor": (round(video_sec / wall, 1)

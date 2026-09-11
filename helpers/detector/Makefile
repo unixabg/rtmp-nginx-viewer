@@ -58,6 +58,9 @@ DECODE      ?=
 # INTERVAL_SCALE multiplies every camera's sample interval. Both empty =
 # worker defaults. See README "Sampling density and decode cost".
 DECODE_KEYFRAMES ?=
+# DECODE_MAX_W: decode frames no wider than this (0 = source). Empty =
+# worker default (1280). See README "Decode resolution".
+DECODE_MAX_W ?=
 INTERVAL_SCALE ?=
 # ACCEL picks the CPU export format: openvino (Intel) or ncnn (ARM).
 ACCEL       ?= openvino
@@ -75,7 +78,8 @@ RUNENV      := RECORDINGS=$(RECORDINGS) DETECTIONS=$(DETECTIONS) \
                JOBLOG=$(JOBLOG) JOBS=$(JOBS) $(if $(DETECT_MODEL),DETECT_MODEL=$(DETECT_MODEL),) \
                $(if $(DECODE),DECODE=$(DECODE),) $(if $(DECODE_THREADS),DECODE_THREADS=$(DECODE_THREADS),) \
                $(if $(INTERVAL_SCALE),INTERVAL_SCALE=$(INTERVAL_SCALE),) \
-               $(if $(DECODE_KEYFRAMES),DECODE_KEYFRAMES=$(DECODE_KEYFRAMES),)
+               $(if $(DECODE_KEYFRAMES),DECODE_KEYFRAMES=$(DECODE_KEYFRAMES),) \
+               $(if $(DECODE_MAX_W),DECODE_MAX_W=$(DECODE_MAX_W),)
 
 SCRIPTS     := detect_worker.py run_detection.sh prune_detections.sh build_index.py
 # Version is whatever git says about this checkout, stamped into
@@ -363,19 +367,20 @@ for m in root.rglob('*.json'):
     t=d.get('timing')
     if not t: old+=1; continue
     h=d.get('host',{})
-    by[(h.get('name','?'), h.get('model','?'), d.get('worker',{}).get('version','-'), t.get('decoder','cv2'))].append(t)
+    by[(h.get('name','?'), h.get('model','?'), d.get('worker',{}).get('version','-'),
+        '%s@%s'%(t.get('decoder','cv2'), t.get('decode_width') or 'src'))].append(t)
 if not by:
     print('no timed manifests yet' + (' (%d predate timing; reprocess with --force to measure)'%old if old else '')); raise SystemExit
 def med(v): return round(statistics.median(v),1) if v else None
-print('%-14s %-24s %-14s %-6s %5s %7s %9s %8s %7s %7s'%('host','model','version','decode','files','wall_s','xRealtime','infer_ms','warmup','decode%'))
-print('-'*113)
+print('%-14s %-24s %-14s %-15s %5s %7s %9s %8s %7s %7s'%('host','model','version','decode','files','wall_s','xRealtime','infer_ms','warmup','decode%'))
+print('-'*122)
 for (host,model,ver,dec_name),ts in sorted(by.items()):
     rt=[t['realtime_factor'] for t in ts if t.get('realtime_factor')]
     wall=[t['wall_sec'] for t in ts]
     ips=[t['ms_per_inference'] for t in ts if t.get('ms_per_inference')]
     dec=[100*t['decode_sec']/t['wall_sec'] for t in ts if t.get('wall_sec')]
     wu=[t['warmup_sec'] for t in ts if t.get('warmup_sec')]
-    print('%-14s %-24s %-14s %-6s %5d %7s %9s %8s %7s %6s%%'%(host[:14], pathlib.Path(model).name[:24], ver[:14], dec_name[:6],
+    print('%-14s %-24s %-14s %-15s %5d %7s %9s %8s %7s %6s%%'%(host[:14], pathlib.Path(model).name[:24], ver[:14], dec_name[:15],
           len(ts), med(wall), med(rt), med(ips) or '-', med(wu) or '-', med(dec)))
 print()
 allrt=[t['realtime_factor'] for ts in by.values() for t in ts if t.get('realtime_factor')]
@@ -441,6 +446,7 @@ test:
 	$(if $(DECODE),DECODE=$(DECODE),) \
 	$(if $(INTERVAL_SCALE),INTERVAL_SCALE=$(INTERVAL_SCALE),) \
 	$(if $(DECODE_KEYFRAMES),DECODE_KEYFRAMES=$(DECODE_KEYFRAMES),) \
+	$(if $(DECODE_MAX_W),DECODE_MAX_W=$(DECODE_MAX_W),) \
 	CAMERA_RULES=$(PREFIX)/$(CONFIG) \
 	$(PY) $(PREFIX)/detect_worker.py --input "$$f" \
 	    --input-root $(RECORDINGS) --output-root /tmp/detect-test; \

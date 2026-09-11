@@ -68,7 +68,7 @@ make purge         # also deletes the detections tree (prompts first)
 
 Useful variables: `PREFIX` (default `/opt/detection`), `RECORDINGS`,
 `DETECTIONS`, `JOBS`, `GPU`, `CUDA_INDEX`, `DECODE`, `DECODE_KEYFRAMES`,
-`INTERVAL_SCALE`, `ACCEL`, `DETECT_MODEL`, `NICE`. `make install`
+`DECODE_MAX_W`, `INTERVAL_SCALE`, `ACCEL`, `DETECT_MODEL`, `NICE`. `make install`
 never overwrites an existing `cameras.json`, and `make upgrade` refreshes
 scripts and Python packages while leaving your config and detections alone.
 
@@ -340,6 +340,43 @@ Notes:
   `ffmpeg`, or `cv2`, and the `ffmpeg`/`cv2` paths produce identical
   manifests to before. `cv2` remains the choice for a box where installing
   `ffmpeg` is not wanted.
+* **NVDEC cannot be combined with keyframe skipping.** `h264_cuvid`
+  ignores `-skip_frame nokey` and decodes every frame: on a 5-minute
+  1440p segment, 36 s through cuvid against 3.9 s for the software
+  decoder that honours the flag. There is no configuration in which
+  hardware decode wins on this hardware.
+
+### Decode resolution
+
+The second half of decode cost is not the decode: it is converting each
+frame to BGR24 and pushing ~11 MB through a pipe, at a resolution nothing
+downstream uses. The model runs at 640×640 and the motion gate at 480
+wide, so a 2560×1440 frame is carried at full size only to be shrunk
+twice.
+
+`DECODE_MAX_W` (default 1280) scales inside ffmpeg, before the colour
+conversion. Measured on a 60 s 1440p clip, decode-and-convert:
+
+```
+2560 wide (source)   6.47 s
+1280 wide            1.33 s
+ 960 wide            0.96 s
+```
+
+Boxes are scaled back to the recording's own coordinates before they
+reach the manifest, so detections stay comparable across nodes and
+settings; `timing.decode_width` records what was actually decoded.
+Thumbnails are annotated and cropped from the scaled frame — they are
+640 wide in the contact sheet regardless, so there is nothing to lose
+until `DECODE_MAX_W` drops below that.
+
+Set `DECODE_MAX_W=0` to decode at source resolution. The floor worth
+using is around 960: below that, small or distant objects start to fall
+under the model's effective resolution and detections are lost, which
+`bench` cannot see and only a `--force` re-run of a known-busy camera
+will reveal. `cv2` ignores this setting — OpenCV decodes at source
+resolution and scaling afterwards saves nothing.
+
 
 ## 2b. Per-camera detection rules (cameras.json)
 
