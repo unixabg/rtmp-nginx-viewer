@@ -94,6 +94,12 @@ server {
 		autoindex_localtime on;
 	}
 
+	#location /detections {
+	#	alias /videos/detections;
+	#	index detections.html;
+	#	autoindex off;                 # the page reads index/*.json instead
+	#}
+
 	#location /recordings {
 	#	# Serve video fragments
 	#	alias /videos/recordings;
