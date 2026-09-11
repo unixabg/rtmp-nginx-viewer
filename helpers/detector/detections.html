@@ -194,7 +194,8 @@
   <div class="filters">
     <select id="camera"><option value="">All cameras</option></select>
     <select id="label"><option value="">All objects</option></select>
-    <label class="toggle"><input type="checkbox" id="hideStill" checked> Hide parked, static, and unconfirmed</label>
+    <select id="hour" aria-label="Filter by hour"><option value="">All hours</option></select>
+    <label class="toggle"><input type="checkbox" id="hideStill" checked> Hide parked, static and unconfirmed</label>
   </div>
 </header>
 
@@ -280,6 +281,11 @@ async function loadDay(d, btn){
   const labs = [...new Set(rows.map(r => r.label))].sort();
   fill(el("camera"), cams, "All cameras");
   fill(el("label"), labs, "All objects");
+  /* Hours reset on every day change: a selection carried over from
+     yesterday would silently empty a day that is not actually empty, and
+     the reason would be off-screen in a collapsed filter row. */
+  el("hour").value = "";
+  fillHours();
   render();
   /* With document scrolling, switching day while scrolled down would leave
      you mid-sheet in unrelated footage. Go back to the top. */
@@ -293,19 +299,52 @@ function fill(sel, values, allText){
     values.map(v => `<option${v === keep ? " selected" : ""}>${v}</option>`).join("");
 }
 
+/* Hour options carry the count of what is visible in that hour under the
+   other filters, so the dropdown doubles as a readout of when the day was
+   busy - the one thing a plain time picker cannot tell you. Hours with
+   nothing in them are listed but disabled, so the list stays 24 long and
+   an hour is always in the same place. */
+function fillHours(){
+  const cam = el("camera").value, lab = el("label").value,
+        hide = el("hideStill").checked, keep = el("hour").value;
+  const n = new Array(24).fill(0);
+  for(const r of rows){
+    if(cam && r.camera !== cam) continue;
+    if(lab && r.label !== lab) continue;
+    if(hide && quiet(r)) continue;
+    const h = parseInt(r.clock, 10);
+    if(h >= 0 && h < 24) n[h]++;
+  }
+  const total = n.reduce((a, b) => a + b, 0);
+  el("hour").innerHTML =
+    `<option value="">All hours (${total})</option>` +
+    n.map((c, h) => {
+      const v = String(h).padStart(2, "0");
+      return `<option value="${v}"${v === keep ? " selected" : ""}` +
+             `${c ? "" : " disabled"}>${v}:00${c ? ` (${c})` : ""}</option>`;
+    }).join("");
+  /* The kept hour may have emptied under a new camera or object filter;
+     that option is now disabled, so fall back to showing everything. */
+  if(keep && !n[parseInt(keep, 10)]) el("hour").value = "";
+}
+
+/* "quiet" covers both parked objects and single-sighting detections that
+   were never judged moving or stationary - typically a detection sitting
+   on the confidence threshold, which has no evidence behind it either
+   way. Older index shards have no unj field and are unaffected. */
+const quiet = r => r.still || r.unj;
+
 function render(){
   const cam = el("camera").value, lab = el("label").value,
-        hide = el("hideStill").checked;
-  /* "hide" covers both parked objects and single-sighting detections that
-     were never judged moving or stationary - typically a detection sitting
-     on the confidence threshold, which has no evidence behind it either
-     way. Older index shards have no unj field and are unaffected. */
-  const quiet = r => r.still || r.unj;
+        hour = el("hour").value, hide = el("hideStill").checked;
+  const inHour = r => !hour || r.clock.slice(0, 2) === hour;
   const list = rows.filter(r =>
-    (!cam || r.camera === cam) && (!lab || r.label === lab) && !(hide && quiet(r)));
+    (!cam || r.camera === cam) && (!lab || r.label === lab) && inHour(r)
+    && !(hide && quiet(r)));
 
   el("count").textContent = list.length
-    ? `${list.length} of ${rows.length} on ${day}` : "";
+    ? `${list.length} of ${rows.length} on ${day}${hour ? ` at ${hour}:00` : ""}`
+    : "";
 
   const sheet = el("sheet");
   sheet.innerHTML = "";
@@ -313,11 +352,12 @@ function render(){
     /* Say which filter is actually responsible: only blame the static
        toggle if unticking it would really reveal something. */
     const hidden = rows.filter(r =>
-      (!cam || r.camera === cam) && (!lab || r.label === lab) && quiet(r)).length;
+      (!cam || r.camera === cam) && (!lab || r.label === lab) && inHour(r)
+      && quiet(r)).length;
     return showEmpty("Nothing matches these filters",
       hide && hidden
         ? `${hidden} parked, static or unconfirmed ${hidden === 1 ? "object is" : "objects are"} hidden. Untick the filter to see them.`
-        : "Try another camera, object, or day.");
+        : `Try another camera, object, ${hour ? "hour, " : ""}or day.`);
   }
   view = list; shown = 0;
   el("more").hidden = false;
@@ -416,7 +456,11 @@ function openDetail(r){
 
 el("close").onclick = () => el("detail").close();
 el("detail").addEventListener("close", () => { el("player").pause(); el("player").src = ""; });
-["camera","label","hideStill"].forEach(id => el(id).onchange = render);
+["camera","label","hideStill"].forEach(id => el(id).onchange = () => {
+  fillHours();   // counts depend on the other filters
+  render();
+});
+el("hour").onchange = render;
 moreObserver.observe(el("more"));
 start();
 </script>
