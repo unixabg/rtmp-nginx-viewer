@@ -24,6 +24,11 @@ CPU. To use a Coral, an Nvidia GPU (TensorRT/ONNX), or a remote inference
 server, replace only the Detector class - the rest of the pipeline and the
 manifest format stay identical.
 
+The decoder is pluggable too (DECODE env var, see the tunables). Once the
+model is fast - a GPU node - decode is where all the time goes, so frames
+can come from the card's NVDEC engine via ffmpeg instead of the CPU. The
+manifest records which decoder produced the frames.
+
 Performance note (from testing on a Raspberry Pi 5): YOLO11n took ~400ms per
 inference in PyTorch but ~80ms exported to NCNN. Model format matters more
 than raw hardware for CPU throughput; export once with
@@ -42,12 +47,15 @@ import argparse
 import fnmatch
 import json
 import os
+import shutil
 import socket
+import subprocess
 import sys
 import time
 from pathlib import Path
 
 import cv2  # opencv-python-headless
+import numpy as np
 
 # ---------------------------------------------------------------- tunables
 FRAME_INTERVAL_SEC = 2.0     # sample one frame every N seconds of video
@@ -59,6 +67,19 @@ CLASSES_OF_INTEREST = {"person", "car", "truck", "bicycle", "motorcycle",
                        "bus", "dog", "cat"}
 MODEL_PATH = os.environ.get("DETECT_MODEL", "yolo11n.pt")
 THUMB_MAX_W = 640
+# How frames are pulled off disk. Decode, not inference, is where a GPU node
+# spends its time (see the timing block in any manifest), so this is the
+# knob that matters once the model is fast:
+#   auto   - NVDEC through ffmpeg if the card and ffmpeg both support it,
+#            else ffmpeg on the CPU, else OpenCV. The safe default.
+#   nvdec  - require hardware decode; fail the file if it is unavailable.
+#   ffmpeg - ffmpeg software decode (frame sampling happens inside ffmpeg,
+#            and decode runs in its own process alongside inference).
+#   cv2    - the original OpenCV grab/retrieve loop.
+DECODE = os.environ.get("DECODE", "auto").lower()
+# Threads per ffmpeg software decoder. 1 is right when several workers run
+# in parallel (each worker = one core); raise it only for a single worker.
+DECODE_THREADS = int(os.environ.get("DECODE_THREADS", "1"))
 
 # ------------------------------------------------------------- tracking
 # Per-frame detections are grouped into TRACKS so one object seen across
@@ -142,6 +163,197 @@ def rules_for(filename: str, cfg: dict) -> dict:
             merged.update(rule)
             return merged
     return dict(cfg["default"])
+
+
+# ------------------------------------------------------------- decoding
+# A frame source yields (timestamp_sec, frame_bgr) for every SAMPLED frame
+# and keeps its own decode-time tally in .t_decode. process() does not care
+# which one it got. Three implementations, best first:
+#
+#   NvdecSource  ffmpeg + <codec>_cuvid: the card's fixed-function decoder
+#                does the H.264/HEVC work, the CPU only receives frames.
+#   FfmpegSource ffmpeg software decode. Still better than cv2 because the
+#                fps filter drops unsampled frames before they cross the
+#                pipe, and decode overlaps inference in a second process.
+#   CvSource     the original OpenCV grab()/retrieve() loop. No ffmpeg
+#                binary needed; opencv-python-headless bundles its own.
+#
+# Explicit cuvid decoders are used rather than "-hwaccel cuda" because the
+# latter silently falls back to software when the hardware path fails, and
+# then the manifest would claim NVDEC for a CPU-decoded file.
+
+_CUVID = {"h264": "h264_cuvid", "hevc": "hevc_cuvid", "h265": "hevc_cuvid",
+          "mpeg4": "mpeg4_cuvid", "mpeg2video": "mpeg2_cuvid",
+          "vp8": "vp8_cuvid", "vp9": "vp9_cuvid", "mjpeg": "mjpeg_cuvid",
+          "av1": "av1_cuvid"}
+
+
+def _ffprobe(path: Path) -> dict:
+    """width/height/codec/duration of the first video stream, via ffprobe."""
+    out = subprocess.run(
+        ["ffprobe", "-v", "error", "-select_streams", "v:0",
+         "-show_entries", "stream=width,height,codec_name,r_frame_rate"
+                          ":format=duration",
+         "-of", "json", str(path)],
+        capture_output=True, text=True, timeout=60)
+    if out.returncode != 0:
+        raise RuntimeError(f"ffprobe failed: {out.stderr.strip()[:200]}")
+    d = json.loads(out.stdout)
+    st = (d.get("streams") or [{}])[0]
+    num, _, den = (st.get("r_frame_rate") or "25/1").partition("/")
+    fps = float(num) / float(den or 1) if float(den or 1) else 25.0
+    return {"w": int(st["width"]), "h": int(st["height"]),
+            "codec": st.get("codec_name", ""),
+            "fps": fps or 25.0,
+            "duration": float(d.get("format", {}).get("duration") or 0)}
+
+
+def _ffmpeg_decoders() -> set:
+    out = subprocess.run(["ffmpeg", "-hide_banner", "-decoders"],
+                         capture_output=True, text=True, timeout=30)
+    return {line.split()[1] for line in out.stdout.splitlines()
+            if line.startswith(" V") and len(line.split()) > 1}
+
+
+class FfmpegSource:
+    """ffmpeg -> rawvideo pipe. name is 'ffmpeg' or 'nvdec'."""
+
+    def __init__(self, path: Path, interval: float, hw: bool):
+        self.info = _ffprobe(path)
+        self.fps = self.info["fps"]
+        self.video_sec = round(self.info["duration"], 1) or None
+        self.interval = interval
+        self.t_decode = 0.0
+        self.name = "nvdec" if hw else "ffmpeg"
+        cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin"]
+        if hw:
+            dec = _CUVID.get(self.info["codec"])
+            if not dec:
+                raise RuntimeError(f"no NVDEC decoder for codec "
+                                   f"'{self.info['codec']}'")
+            cmd += ["-c:v", dec]
+        else:
+            cmd += ["-threads", str(DECODE_THREADS)]
+        cmd += ["-i", str(path), "-an", "-sn", "-dn",
+                "-vf", f"fps=1/{interval}",
+                "-f", "rawvideo", "-pix_fmt", "bgr24", "pipe:1"]
+        self.proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
+                                     stderr=subprocess.PIPE)
+
+    def frames(self):
+        w, h = self.info["w"], self.info["h"]
+        nbytes = w * h * 3
+        n = 0
+        while True:
+            _d = time.perf_counter()
+            buf = self.proc.stdout.read(nbytes)
+            self.t_decode += time.perf_counter() - _d
+            if len(buf) < nbytes:
+                break
+            n += 1
+            # frombuffer over a bytes object is read-only; annotate() copies
+            # before drawing and every other consumer allocates, so that is
+            # fine and saves a 6 MB memcpy per sampled frame.
+            frame = np.frombuffer(buf, np.uint8).reshape(h, w, 3)
+            yield (n - 1) * self.interval, frame
+        self.proc.stdout.close()
+        err = self.proc.stderr.read().decode(errors="replace").strip()
+        rc = self.proc.wait()
+        if rc != 0 and n == 0:
+            raise RuntimeError(f"{self.name} produced no frames "
+                               f"(ffmpeg rc={rc}): {err[:300]}")
+        if err:
+            print(f"WARNING: ffmpeg ({self.name}): {err[:300]}",
+                  file=sys.stderr)
+
+    def release(self):
+        if self.proc.poll() is None:
+            self.proc.kill()
+            self.proc.wait()
+
+
+class CvSource:
+    """The original OpenCV loop: grab() every frame, retrieve() sampled ones."""
+    name = "cv2"
+
+    def __init__(self, path: Path, interval: float):
+        self.cap = cv2.VideoCapture(str(path))
+        if not self.cap.isOpened():
+            raise RuntimeError("cv2 cannot open file")
+        self.fps = self.cap.get(cv2.CAP_PROP_FPS) or 25.0
+        self.step = max(int(self.fps * interval), 1)
+        total = self.cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0
+        self.video_sec = round(total / self.fps, 1) if total else None
+        self.t_decode = 0.0
+
+    def frames(self):
+        idx = 0
+        while True:
+            _d = time.perf_counter()
+            ok = self.cap.grab()
+            self.t_decode += time.perf_counter() - _d
+            if not ok:
+                break
+            if idx % self.step != 0:
+                idx += 1
+                continue
+            _d = time.perf_counter()
+            ok, frame = self.cap.retrieve()
+            self.t_decode += time.perf_counter() - _d
+            idx += 1
+            if ok:
+                yield idx / self.fps, frame
+
+    def release(self):
+        self.cap.release()
+
+
+def open_source(path: Path, interval: float):
+    """Pick a frame source per DECODE. Returns the source; raises if the
+    requested decoder cannot open the file."""
+    have_ffmpeg = shutil.which("ffmpeg") and shutil.which("ffprobe")
+    if DECODE == "cv2" or (DECODE == "auto" and not have_ffmpeg):
+        return CvSource(path, interval)
+    if not have_ffmpeg:
+        raise RuntimeError(f"DECODE={DECODE} needs ffmpeg and ffprobe on PATH")
+    if DECODE == "ffmpeg":
+        return FfmpegSource(path, interval, hw=False)
+    # nvdec or auto: is the hardware path there at all?
+    hw_ok = bool(os.path.exists("/dev/nvidiactl")) and any(
+        d.endswith("_cuvid") for d in _ffmpeg_decoders())
+    if DECODE == "nvdec":
+        if not hw_ok:
+            raise RuntimeError("DECODE=nvdec but no NVIDIA device or ffmpeg "
+                               "lacks *_cuvid decoders (apt install ffmpeg "
+                               "libnvcuvid1)")
+        return FfmpegSource(path, interval, hw=True)
+    # auto
+    if hw_ok:
+        try:
+            src = FfmpegSource(path, interval, hw=True)
+            # Probe: fail fast if the decoder cannot start, rather than
+            # discovering it after the model has loaded. Pull one frame.
+            it = src.frames()
+            first = next(it, None)
+            if first is None:
+                raise RuntimeError("nvdec yielded no frames")
+            src._prefetched = (first, it)
+            return src
+        except Exception as e:  # noqa: BLE001
+            print(f"WARNING: NVDEC unavailable ({str(e)[:200]}); "
+                  f"falling back to ffmpeg software decode", file=sys.stderr)
+    return FfmpegSource(path, interval, hw=False)
+
+
+def iter_frames(src):
+    """Yield from a source, honouring a frame open_source() already pulled."""
+    pre = getattr(src, "_prefetched", None)
+    if pre:
+        first, it = pre
+        yield first
+        yield from it
+    else:
+        yield from src.frames()
 
 
 class Detector:
@@ -458,44 +670,26 @@ def process(input_path: Path, input_root: Path, output_root: Path,
         print(f"skip (camera excluded by rule): {input_path.name}")
         return 0
 
-    cap = cv2.VideoCapture(str(input_path))
-    if not cap.isOpened():
-        print(f"ERROR: cannot open {input_path}", file=sys.stderr)
+    t0 = time.time()
+    try:
+        src = open_source(input_path, interval)
+    except Exception as e:  # noqa: BLE001
+        print(f"ERROR: cannot open {input_path}: {e}", file=sys.stderr)
         return 1
-
-    fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
-    step = max(int(fps * interval), 1)
 
     detector = Detector(MODEL_PATH, classes, conf)
     tracker = Tracker()
     prev_gray = None
-    frame_idx = 0
     sampled = 0
     inferred = 0
-    t0 = time.time()
     # Timing breakdown. Decode vs inference is the number that tells you
     # whether a faster model (or a GPU) would actually help this machine,
     # or whether it is already bottlenecked on pulling frames off disk.
-    t_decode = t_infer = t_gate = t_warmup = 0.0
+    t_infer = t_gate = t_warmup = 0.0
     last_infer_ts = -1e9   # forces the first sampled frame to be inferred
     keepalives = 0
-    frame_total = cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0
 
-    while True:
-        _d = time.perf_counter()
-        ok = cap.grab()
-        t_decode += time.perf_counter() - _d
-        if not ok:
-            break
-        if frame_idx % step != 0:
-            frame_idx += 1
-            continue
-        _d = time.perf_counter()
-        ok, frame = cap.retrieve()
-        t_decode += time.perf_counter() - _d
-        frame_idx += 1
-        if not ok:
-            continue
+    for ts_now, frame in iter_frames(src):
         sampled += 1
 
         _g = time.perf_counter()
@@ -503,7 +697,6 @@ def process(input_path: Path, input_root: Path, output_root: Path,
                            (MOTION_DOWNSCALE_W,
                             int(frame.shape[0] * MOTION_DOWNSCALE_W / frame.shape[1])))
         gray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
-        ts_now = frame_idx / fps
         gated = False
         if prev_gray is not None and motion_score(prev_gray, gray) < min_area:
             gated = True
@@ -538,7 +731,8 @@ def process(input_path: Path, input_root: Path, output_root: Path,
         # holds at most one per active track.
         tracker.update(dets, ts_sec, frame if save_thumbs else None)
 
-    cap.release()
+    src.release()
+    t_decode = src.t_decode
     t_thumb = time.perf_counter()
 
     # Close tracks and turn them into manifest entries. One track = one
@@ -576,10 +770,14 @@ def process(input_path: Path, input_root: Path, output_root: Path,
     moving = [tr for tr in tracks if not tr["stationary"]]
     t_thumb = time.perf_counter() - t_thumb
     wall = time.time() - t0
-    video_sec = round(frame_total / fps, 1) if frame_total and fps else None
+    video_sec = src.video_sec
     timing = {
         "wall_sec": round(wall, 2),
         "video_sec": video_sec,
+        # Which decoder produced the frames: nvdec, ffmpeg, or cv2. With a
+        # GPU this is the number to check - a 'cv2' or 'ffmpeg' here on a
+        # CUDA node means the card is only doing inference.
+        "decoder": src.name,
         # >1 means faster than realtime: 6.7 == one core keeps up with ~6
         # cameras of continuous recording. The headline portability number.
         "realtime_factor": (round(video_sec / wall, 1)
@@ -631,7 +829,7 @@ def process(input_path: Path, input_root: Path, output_root: Path,
           f"(moving={len(moving)}, stationary={stat_n}) labels={labels} "
           f"| {timing['wall_sec']}s"
           + (f" for {timing['video_sec']}s video = {rt}x realtime" if rt else "")
-          + f" | decode {timing['decode_sec']}s, gate {timing['motion_gate_sec']}s, "
+          + f" | decode {timing['decode_sec']}s ({src.name}), gate {timing['motion_gate_sec']}s, "
           f"infer {timing['inference_sec']}s"
           + (f", warmup {timing['warmup_sec']}s" if t_warmup else "")
           + (f" ({inferred} @ {timing['ms_per_inference']}ms)"

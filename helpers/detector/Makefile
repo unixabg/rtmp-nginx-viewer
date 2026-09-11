@@ -50,6 +50,10 @@ GPU         ?= 0
 # driver, pass CUDA_INDEX=https://download.pytorch.org/whl/cu130. Match it
 # to the "CUDA Version" that nvidia-smi prints.
 CUDA_INDEX  ?= https://download.pytorch.org/whl/cu126
+# DECODE picks the frame decoder: auto (NVDEC if present, else ffmpeg, else
+# cv2), nvdec, ffmpeg, cv2. Empty = worker default (auto). On a GPU node the
+# decoder, not the model, is the bottleneck - see README "NVDEC".
+DECODE      ?=
 # ACCEL picks the CPU export format: openvino (Intel) or ncnn (ARM).
 ACCEL       ?= openvino
 MODEL       ?= yolo11n.pt
@@ -63,7 +67,8 @@ endif
 JOBLOG      := $(DETECTIONS)/.joblog
 RUNNER      := $(PREFIX)/run_detection.sh
 RUNENV      := RECORDINGS=$(RECORDINGS) DETECTIONS=$(DETECTIONS) \
-               JOBLOG=$(JOBLOG) JOBS=$(JOBS) $(if $(DETECT_MODEL),DETECT_MODEL=$(DETECT_MODEL),)
+               JOBLOG=$(JOBLOG) JOBS=$(JOBS) $(if $(DETECT_MODEL),DETECT_MODEL=$(DETECT_MODEL),) \
+               $(if $(DECODE),DECODE=$(DECODE),) $(if $(DECODE_THREADS),DECODE_THREADS=$(DECODE_THREADS),)
 
 SCRIPTS     := detect_worker.py run_detection.sh prune_detections.sh build_index.py
 # Version is whatever git says about this checkout, stamped into
@@ -87,7 +92,7 @@ help:
 	@echo "current settings (override on the command line):"
 	@printf "  %-14s %s\n" PREFIX $(PREFIX) RECORDINGS $(RECORDINGS) \
 	    DETECTIONS $(DETECTIONS) JOBS $(JOBS) GPU $(GPU) ACCEL $(ACCEL) \
-	    CUDA_INDEX $(CUDA_INDEX) \
+	    CUDA_INDEX $(CUDA_INDEX) DECODE "$(if $(DECODE),$(DECODE),auto (worker default))" \
 	    THUMB_DAYS $(THUMB_DAYS) MANIFEST_DAYS $(MANIFEST_DAYS)
 	@echo
 	@echo "  tip: PROFILE=viewer switches to /videos paths"
@@ -102,7 +107,11 @@ install: install-deps install-scripts install-config
 ## install-deps: apt packages + venv + Python wheels
 install-deps:
 	@echo "==> apt packages"
-	sudo apt-get install -y python3-venv parallel
+	sudo apt-get install -y python3-venv parallel ffmpeg
+ifeq ($(GPU),1)
+	@echo "==> libnvcuvid1 (NVDEC userspace library, non-free)"
+	sudo apt-get install -y libnvcuvid1
+endif
 	@echo "==> venv at $(VENV)"
 	sudo mkdir -p $(PREFIX) $(DETECTIONS) $(TMPDIR_PIP)
 	[ -x $(PY) ] || sudo python3 -m venv $(VENV)
@@ -234,6 +243,21 @@ doctor:
 	    echo "                        CUDA than the driver (reinstall with CUDA_INDEX=.../cu126), libcuda1 missing,"; \
 	    echo "                        or the nvidia module not loaded (reboot after driver install)."; fi
 	@printf "%-22s" "opencv:";           $(PY) -c "import cv2;print('ok  ',cv2.__version__)" 2>/dev/null || echo "MISSING"
+	@printf "%-22s" "ffmpeg:"; \
+	  if command -v ffmpeg >/dev/null && command -v ffprobe >/dev/null; then \
+	    echo "ok  ($$(ffmpeg -version 2>/dev/null | head -1 | cut -d' ' -f3))"; \
+	  else echo "MISSING — apt install ffmpeg (worker falls back to cv2 decode)"; fi
+	@printf "%-22s" "nvdec:"; \
+	  if ! command -v ffmpeg >/dev/null; then echo "n/a (no ffmpeg)"; \
+	  elif [ ! -e /dev/nvidiactl ]; then echo "n/a (no NVIDIA device)"; \
+	  elif ! ffmpeg -hide_banner -decoders 2>/dev/null | grep -q h264_cuvid; then \
+	    echo "UNAVAILABLE — this ffmpeg has no *_cuvid decoders"; \
+	  elif ! ldconfig -p 2>/dev/null | grep -q libnvcuvid.so.1; then \
+	    echo "UNAVAILABLE — apt install libnvcuvid1"; \
+	  elif ffmpeg -hide_banner -loglevel error -f lavfi -i testsrc2=size=64x64:rate=5:duration=1 -c:v libx264 -pix_fmt yuv420p -f mp4 -y /tmp/.nvdec-probe.mp4 2>/dev/null \
+	       && ffmpeg -hide_banner -loglevel error -c:v h264_cuvid -i /tmp/.nvdec-probe.mp4 -f null - 2>/dev/null; then \
+	    rm -f /tmp/.nvdec-probe.mp4; echo "ok  (h264_cuvid decoded a test clip; DECODE=auto will use it)"; \
+	  else rm -f /tmp/.nvdec-probe.mp4; echo "FAILED — h264_cuvid present but could not decode (driver/libnvcuvid mismatch?)"; fi
 	@printf "%-22s" "recordings:";       [ -d $(RECORDINGS) ] && \
 	    echo "ok  ($(RECORDINGS), $$(find $(RECORDINGS) -maxdepth 1 -name '*.mp4' 2>/dev/null | wc -l) mp4 at top level)" \
 	    || echo "MISSING — $(RECORDINGS) not present (nfs not mounted?)"
@@ -323,19 +347,19 @@ for m in root.rglob('*.json'):
     t=d.get('timing')
     if not t: old+=1; continue
     h=d.get('host',{})
-    by[(h.get('name','?'), h.get('model','?'), d.get('worker',{}).get('version','-'))].append(t)
+    by[(h.get('name','?'), h.get('model','?'), d.get('worker',{}).get('version','-'), t.get('decoder','cv2'))].append(t)
 if not by:
     print('no timed manifests yet' + (' (%d predate timing; reprocess with --force to measure)'%old if old else '')); raise SystemExit
 def med(v): return round(statistics.median(v),1) if v else None
-print('%-14s %-24s %-14s %5s %7s %9s %8s %7s %7s'%('host','model','version','files','wall_s','xRealtime','infer_ms','warmup','decode%'))
-print('-'*106)
-for (host,model,ver),ts in sorted(by.items()):
+print('%-14s %-24s %-14s %-6s %5s %7s %9s %8s %7s %7s'%('host','model','version','decode','files','wall_s','xRealtime','infer_ms','warmup','decode%'))
+print('-'*113)
+for (host,model,ver,dec_name),ts in sorted(by.items()):
     rt=[t['realtime_factor'] for t in ts if t.get('realtime_factor')]
     wall=[t['wall_sec'] for t in ts]
     ips=[t['ms_per_inference'] for t in ts if t.get('ms_per_inference')]
     dec=[100*t['decode_sec']/t['wall_sec'] for t in ts if t.get('wall_sec')]
     wu=[t['warmup_sec'] for t in ts if t.get('warmup_sec')]
-    print('%-14s %-24s %-14s %5d %7s %9s %8s %7s %6s%%'%(host[:14], pathlib.Path(model).name[:24], ver[:14],
+    print('%-14s %-24s %-14s %-6s %5d %7s %9s %8s %7s %6s%%'%(host[:14], pathlib.Path(model).name[:24], ver[:14], dec_name[:6],
           len(ts), med(wall), med(rt), med(ips) or '-', med(wu) or '-', med(dec)))
 print()
 allrt=[t['realtime_factor'] for ts in by.values() for t in ts if t.get('realtime_factor')]
@@ -398,6 +422,7 @@ test:
 	echo "==> testing on $$f"; \
 	rm -rf /tmp/detect-test && mkdir -p /tmp/detect-test; \
 	$(if $(DETECT_MODEL),DETECT_MODEL=$(DETECT_MODEL),) \
+	$(if $(DECODE),DECODE=$(DECODE),) \
 	CAMERA_RULES=$(PREFIX)/$(CONFIG) \
 	$(PY) $(PREFIX)/detect_worker.py --input "$$f" \
 	    --input-root $(RECORDINGS) --output-root /tmp/detect-test; \

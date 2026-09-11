@@ -67,7 +67,8 @@ make purge         # also deletes the detections tree (prompts first)
 ```
 
 Useful variables: `PREFIX` (default `/opt/detection`), `RECORDINGS`,
-`DETECTIONS`, `JOBS`, `GPU`, `CUDA_INDEX`, `ACCEL`, `DETECT_MODEL`, `NICE`. `make install`
+`DETECTIONS`, `JOBS`, `GPU`, `CUDA_INDEX`, `DECODE`, `ACCEL`, `DETECT_MODEL`,
+`NICE`. `make install`
 never overwrites an existing `cameras.json`, and `make upgrade` refreshes
 scripts and Python packages while leaving your config and detections alone.
 
@@ -195,7 +196,9 @@ nothing — get the right interpreter for free. To upgrade later:
 The worker never specifies a device. At inference time Ultralytics uses an
 NVIDIA GPU if PyTorch can see one (CUDA), and falls back to CPU otherwise —
 no flags, no code changes, and a mixed cluster of GPU and CPU nodes just
-works. Video decode is CPU (OpenCV/ffmpeg) in both cases by design.
+works. Video decode defaults to the CPU (`ffmpeg`, or OpenCV when ffmpeg is
+absent) and moves onto the card's NVDEC engine automatically when the pieces
+are there — see [NVDEC](#nvdec-hardware-decode-on-gpu-nodes) below.
 
 Per-node choices that follow from this:
 
@@ -203,8 +206,10 @@ Per-node choices that follow from this:
   wheels. Do the export below (NCNN for ARM, OpenVINO for Intel); it's the big CPU speedup.
 * **NVIDIA node:** use the CUDA install variant above and **skip the NCNN
   export** — NCNN inference is CPU-only, so pointing `DETECT_MODEL` at it
-  would leave the GPU idle. Keep the default `.pt` model. Verify with
-  `make doctor` (the `nvidia driver:` and `torch:` lines) or directly:
+  would leave the GPU idle. Keep the default `.pt` model, and install
+  `libnvcuvid1` so decode can move onto the card too (`make install GPU=1`
+  does). Verify with `make doctor` (the `nvidia driver:`, `torch:` and
+  `nvdec:` lines) or directly:
   `/opt/detection/venv/bin/python3 -c "import torch; print(torch.__version__, torch.cuda.is_available())"`
   — expect a `+cu126`-style version and `True`. A `+cu130` version with
   `False` means the torch build is newer than the driver; reinstall with
@@ -239,6 +244,77 @@ at, so mixed nodes can each use their best format. When in doubt, export
 both and compare a run's `wall_time_sec`. (Ignore any per-layer "Could not
 initialize NNPACK" warnings during export — PyTorch falls back cleanly on
 CPUs without those instructions.)
+
+### NVDEC: hardware decode on GPU nodes
+
+A fast model exposes the next bottleneck. Measured on an i7-4770 with an
+RTX 3070: inference dropped to 10.7 ms per frame, but a 5-minute 1080p
+segment still took 15 s, of which 12.5 s was the CPU decoding H.264. Six
+workers in parallel made it worse, not better — four physical cores
+fighting over decode threads pushed per-file time to 62 s while the GPU sat
+at 0 %. On that box the card was a fast model attached to a slow decoder.
+
+The fix is to decode on the card. Every NVIDIA GPU since 2012 carries an
+NVDEC block — a fixed-function H.264/HEVC decoder separate from the CUDA
+cores — and the worker uses it through ffmpeg's `h264_cuvid`/`hevc_cuvid`
+decoders. Frame sampling (`-vf fps=1/interval`) happens inside ffmpeg, so
+only the sampled frames cross into Python, and decode runs in its own
+process alongside inference instead of before it.
+
+Nothing to configure. `DECODE=auto` (the default) picks, per file:
+
+1. **nvdec** — if `/dev/nvidiactl` exists, `ffmpeg` has `*_cuvid` decoders,
+   and the decoder actually starts on this file;
+2. **ffmpeg** — software decode, one thread per worker (`DECODE_THREADS`);
+3. **cv2** — the original OpenCV loop, when there is no `ffmpeg` binary.
+
+A mixed cluster therefore does the right thing per node without per-node
+settings. Force a decoder with `DECODE=nvdec|ffmpeg|cv2` (env, or
+`make run DECODE=...`) — `nvdec` fails the file rather than falling back,
+which is what you want when verifying a new node.
+
+Requirements on the GPU node, all from apt:
+
+```
+sudo apt install ffmpeg libnvcuvid1
+```
+
+Debian's `ffmpeg` is built with the NVIDIA codec headers, so the `*_cuvid`
+decoders are present; `libnvcuvid1` (non-free, from the same driver series
+as `nvidia-driver`) is the userspace library they load at runtime. Without
+it the decoders are listed but every file falls back to software with a
+warning. `make doctor` checks both, then decodes a one-second test clip
+through `h264_cuvid` so "nvdec: ok" means it really works on this driver.
+
+Every manifest records `timing.decoder`, and `make bench` groups on it, so
+a `cv2` or `ffmpeg` row on a node that should say `nvdec` is visible at a
+glance. The row below is the i7-4770 / RTX 3070 box *before* NVDEC, six
+workers, software decode — the number to beat:
+
+```
+host      model        version   decode  files  wall_s xRealtime  infer_ms  decode%
+busbarn   yolo11n.pt   v1.0.3    cv2        40    62.2       4.9      38.5    92.4%
+```
+
+After switching, expect `decode%` to fall sharply, `wall_s` to approach the
+model's own time, and `infer_ms` to return to the single-worker figure
+(the 38 ms above is the GPU waiting on a starved CPU, not the card).
+
+Notes:
+
+* NVDEC is a separate engine from the CUDA cores, so running it does not
+  slow inference. A 3070's single NVDEC handles several 1080p streams
+  faster than realtime — plenty for `JOBS=4`; the sampled frames are
+  copied to system memory (about 3 MB each) but at 1 frame per 2 s that is
+  noise.
+* With decode off the CPU, `JOBS` is no longer capped by core count for
+  decode reasons; the remaining CPU work per worker is the motion gate,
+  thumbnails, and feeding the model. Re-run `make bench` after changing it.
+* There is no NVDEC path for the motion gate or thumbnails; they stay on
+  the CPU and are small.
+* Nodes without a GPU are unaffected: `auto` lands on `ffmpeg` (or `cv2`),
+  and those paths produce identical manifests to before. `cv2` remains
+  the choice for a box where installing `ffmpeg` is not wanted.
 
 ## 2b. Per-camera detection rules (cameras.json)
 
@@ -649,8 +725,11 @@ make a quiet file with two inferences look catastrophically slow.
 
 The decode/inference split tells you what to fix. Inference-dominated means
 a faster model or a GPU will help. Decode-dominated means it won't — you're
-bound by pulling frames off disk, and the lever is a longer `interval` or
-fewer parallel jobs.
+bound by pulling frames off disk. On a GPU node the lever is NVDEC (check
+`timing.decoder` says `nvdec`); on a CPU node it is fewer parallel jobs
+(one per physical core, with `DECODE_THREADS=1`) — a longer `interval`
+does *not* reduce decode, since every H.264 frame must be decoded to reach
+the next one.
 
 `make bench` summarizes across everything already processed, grouped by host
 and model, so a mixed fleet can be compared directly:
