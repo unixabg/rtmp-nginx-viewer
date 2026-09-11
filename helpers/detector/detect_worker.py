@@ -47,10 +47,12 @@ import argparse
 import fnmatch
 import json
 import os
+import re
 import shutil
 import socket
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -80,16 +82,27 @@ DECODE = os.environ.get("DECODE", "auto").lower()
 # Threads per ffmpeg software decoder. 1 is right when several workers run
 # in parallel (each worker = one core); raise it only for a single worker.
 DECODE_THREADS = int(os.environ.get("DECODE_THREADS", "1"))
-# Denser sampling where it is cheap. Every frame is decoded regardless of
-# the sample interval (H.264 frames depend on their predecessors), so on a
-# node where inference is ~10 ms the only cost of sampling more often is
-# the motion gate - and a car crossing the frame in under one interval is
-# the thing a sparse sample misses. INTERVAL_SCALE multiplies every
-# camera's interval: "auto" = GPU_INTERVAL_SCALE when CUDA is available,
-# 1.0 otherwise; or a number to force it. A per-camera "gpu_interval" in
-# cameras.json takes precedence over the scale on CUDA nodes.
+# Keyframe-only decode. When the sample interval is at least the camera's
+# keyframe spacing (GOP), every sampled frame can be a keyframe, and
+# "-skip_frame nokey" makes the decoder parse-and-discard the frames in
+# between instead of decoding them: ~GOP-length-in-frames less work, on
+# any node. Sample times snap to keyframes. "auto" probes the GOP of each
+# file and uses keyframe mode when interval >= GOP * KEYFRAME_MIN_RATIO;
+# "1" forces it (interval is raised to the GOP if needed); "0" disables.
+# Not combined with NVDEC: decoding one frame per GOP is cheap anywhere.
+KEYFRAMES = os.environ.get("DECODE_KEYFRAMES", "auto").lower()
+KEYFRAME_MIN_RATIO = 0.9
+GOP_PROBE_SEC = 20
+# Denser sampling on GPU nodes. With inference at ~10 ms, sampling more
+# often costs only the motion gate - but an interval below the camera's
+# keyframe spacing gives up keyframe-only decode (below), which is a much
+# bigger saving. So density is opt-in per camera: "gpu_interval" in
+# cameras.json is used verbatim on CUDA nodes. INTERVAL_SCALE multiplies
+# every camera's interval for the cameras without one: "auto" =
+# GPU_INTERVAL_SCALE on CUDA nodes (default 1.0, i.e. no change), 1.0
+# elsewhere; or a number to force it anywhere.
 INTERVAL_SCALE = os.environ.get("INTERVAL_SCALE", "auto").lower()
-GPU_INTERVAL_SCALE = float(os.environ.get("GPU_INTERVAL_SCALE", "0.25"))
+GPU_INTERVAL_SCALE = float(os.environ.get("GPU_INTERVAL_SCALE", "1.0"))
 MIN_INTERVAL_SEC = 0.1
 
 # ------------------------------------------------------------- tracking
@@ -255,6 +268,30 @@ def _ffprobe(path: Path) -> dict:
             "duration": float(d.get("format", {}).get("duration") or 0)}
 
 
+def _probe_gop(path: Path) -> float:
+    """Median keyframe spacing in seconds over the first GOP_PROBE_SEC of
+    the file, or 0 if it cannot be determined (fewer than two keyframes)."""
+    out = subprocess.run(
+        ["ffprobe", "-v", "error", "-skip_frame", "nokey",
+         "-select_streams", "v:0", "-show_entries", "frame=pts_time",
+         "-of", "csv=p=0", "-read_intervals", f"%+{GOP_PROBE_SEC}",
+         str(path)],
+        capture_output=True, text=True, timeout=60)
+    ts = []
+    for line in out.stdout.splitlines():
+        try:
+            ts.append(float(line.strip().rstrip(",")))
+        except ValueError:
+            continue
+    if len(ts) < 2:
+        return 0.0
+    gaps = sorted(b - a for a, b in zip(ts, ts[1:]) if b > a)
+    return gaps[len(gaps) // 2] if gaps else 0.0
+
+
+_SHOWINFO = re.compile(r"pts_time:\s*([0-9.]+)")
+
+
 def _ffmpeg_decoders() -> set:
     out = subprocess.run(["ffmpeg", "-hide_banner", "-decoders"],
                          capture_output=True, text=True, timeout=30)
@@ -263,29 +300,65 @@ def _ffmpeg_decoders() -> set:
 
 
 class FfmpegSource:
-    """ffmpeg -> rawvideo pipe. name is 'ffmpeg' or 'nvdec'."""
+    """ffmpeg -> rawvideo pipe. name is 'nvdec', 'ffmpeg', or 'keyframes'.
 
-    def __init__(self, path: Path, interval: float, hw: bool):
+    Timestamps come from a showinfo filter on stderr rather than being
+    computed, so they are exact in every mode (keyframe mode in particular
+    yields whatever pts the keyframes actually have)."""
+
+    def __init__(self, path: Path, interval: float, hw: bool,
+                 keyframes: bool = False):
         self.info = _ffprobe(path)
         self.fps = self.info["fps"]
         self.video_sec = round(self.info["duration"], 1) or None
         self.interval = interval
         self.t_decode = 0.0
-        self.name = "nvdec" if hw else "ffmpeg"
-        cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin"]
-        if hw:
-            dec = _CUVID.get(self.info["codec"])
-            if not dec:
-                raise RuntimeError(f"no NVDEC decoder for codec "
-                                   f"'{self.info['codec']}'")
-            cmd += ["-c:v", dec]
+        self.name = "keyframes" if keyframes else ("nvdec" if hw else "ffmpeg")
+        # showinfo logs at info level; "level+" tags every line with its
+        # severity so the reader can keep showinfo and real problems and
+        # drop the input banner.
+        cmd = ["ffmpeg", "-hide_banner", "-loglevel", "level+info",
+               "-nostdin", "-nostats"]
+        if keyframes:
+            cmd += ["-skip_frame", "nokey", "-threads", str(DECODE_THREADS)]
+            # Keep keyframes at least `interval` apart (minus a little slack
+            # so a 1.999 s GOP still passes a 2.0 s interval), passthrough
+            # timing so nothing is duplicated to fill a grid.
+            vf = (f"select='isnan(prev_selected_t)+gte(t-prev_selected_t,"
+                 f"{max(interval - 0.1, 0):.3f})',showinfo")
+            vsync = ["-fps_mode", "passthrough"]
         else:
-            cmd += ["-threads", str(DECODE_THREADS)]
-        cmd += ["-i", str(path), "-an", "-sn", "-dn",
-                "-vf", f"fps=1/{interval}",
+            if hw:
+                dec = _CUVID.get(self.info["codec"])
+                if not dec:
+                    raise RuntimeError(f"no NVDEC decoder for codec "
+                                       f"'{self.info['codec']}'")
+                cmd += ["-c:v", dec]
+            else:
+                cmd += ["-threads", str(DECODE_THREADS)]
+            vf = f"fps=1/{interval},showinfo"
+            vsync = []
+        cmd += ["-i", str(path), "-an", "-sn", "-dn", "-vf", vf] + vsync + [
                 "-f", "rawvideo", "-pix_fmt", "bgr24", "pipe:1"]
         self.proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
                                      stderr=subprocess.PIPE)
+        # showinfo logs one line per output frame to stderr; read it on a
+        # thread so neither pipe can fill and deadlock the other.
+        self._pts = []
+        self._errs = []
+        self._reader = threading.Thread(target=self._drain, daemon=True)
+        self._reader.start()
+
+    def _drain(self):
+        for raw in self.proc.stderr:
+            line = raw.decode(errors="replace")
+            m = _SHOWINFO.search(line)
+            if m and "showinfo" in line:
+                self._pts.append(float(m.group(1)))
+            elif ("[warning]" in line or "[error]" in line
+                  or "[fatal]" in line or "[panic]" in line):
+                self._errs.append(re.sub(r"\[(warning|error|fatal|panic)\] ",
+                                         "", line.strip()))
 
     def frames(self):
         w, h = self.info["w"], self.info["h"]
@@ -297,21 +370,29 @@ class FfmpegSource:
             self.t_decode += time.perf_counter() - _d
             if len(buf) < nbytes:
                 break
+            # The showinfo line for frame n is written before frame n's
+            # bytes finish crossing the pipe, but the reader thread may not
+            # have scheduled yet; wait briefly for it rather than guess.
+            for _ in range(200):
+                if len(self._pts) > n:
+                    break
+                time.sleep(0.005)
+            ts = self._pts[n] if len(self._pts) > n else n * self.interval
             n += 1
             # frombuffer over a bytes object is read-only; annotate() copies
             # before drawing and every other consumer allocates, so that is
-            # fine and saves a 6 MB memcpy per sampled frame.
+            # fine and saves a memcpy per sampled frame.
             frame = np.frombuffer(buf, np.uint8).reshape(h, w, 3)
-            yield (n - 1) * self.interval, frame
+            yield ts, frame
         self.proc.stdout.close()
-        err = self.proc.stderr.read().decode(errors="replace").strip()
         rc = self.proc.wait()
+        self._reader.join(timeout=5)
+        err = " | ".join(self._errs)[:300]
         if rc != 0 and n == 0:
             raise RuntimeError(f"{self.name} produced no frames "
-                               f"(ffmpeg rc={rc}): {err[:300]}")
-        if err:
-            print(f"WARNING: ffmpeg ({self.name}): {err[:300]}",
-                  file=sys.stderr)
+                               f"(ffmpeg rc={rc}): {err}")
+        if self._errs:
+            print(f"WARNING: ffmpeg ({self.name}): {err}", file=sys.stderr)
 
     def release(self):
         if self.proc.poll() is None:
@@ -356,15 +437,28 @@ class CvSource:
 
 
 def open_source(path: Path, interval: float):
-    """Pick a frame source per DECODE. Returns the source; raises if the
-    requested decoder cannot open the file."""
+    """Pick a frame source per DECODE / DECODE_KEYFRAMES. Returns
+    (source, effective_interval); raises if the requested decoder cannot
+    open the file."""
     have_ffmpeg = shutil.which("ffmpeg") and shutil.which("ffprobe")
     if DECODE == "cv2" or (DECODE == "auto" and not have_ffmpeg):
-        return CvSource(path, interval)
+        return CvSource(path, interval), interval
     if not have_ffmpeg:
         raise RuntimeError(f"DECODE={DECODE} needs ffmpeg and ffprobe on PATH")
+    # Keyframe-only decode beats every decoder when the interval allows it.
+    if KEYFRAMES in ("auto", "1"):
+        gop = _probe_gop(path)
+        if KEYFRAMES == "1":
+            if gop and interval < gop:
+                print(f"NOTE: DECODE_KEYFRAMES=1 raises interval "
+                      f"{interval:g}s to the GOP ({gop:.2f}s)",
+                      file=sys.stderr)
+                interval = gop
+            return FfmpegSource(path, interval, hw=False, keyframes=True), interval
+        if gop and interval >= gop * KEYFRAME_MIN_RATIO:
+            return FfmpegSource(path, interval, hw=False, keyframes=True), interval
     if DECODE == "ffmpeg":
-        return FfmpegSource(path, interval, hw=False)
+        return FfmpegSource(path, interval, hw=False), interval
     # nvdec or auto: is the hardware path there at all?
     hw_ok = bool(os.path.exists("/dev/nvidiactl")) and any(
         d.endswith("_cuvid") for d in _ffmpeg_decoders())
@@ -373,7 +467,7 @@ def open_source(path: Path, interval: float):
             raise RuntimeError("DECODE=nvdec but no NVIDIA device or ffmpeg "
                                "lacks *_cuvid decoders (apt install ffmpeg "
                                "libnvcuvid1)")
-        return FfmpegSource(path, interval, hw=True)
+        return FfmpegSource(path, interval, hw=True), interval
     # auto
     if hw_ok:
         try:
@@ -385,11 +479,11 @@ def open_source(path: Path, interval: float):
             if first is None:
                 raise RuntimeError("nvdec yielded no frames")
             src._prefetched = (first, it)
-            return src
+            return src, interval
         except Exception as e:  # noqa: BLE001
             print(f"WARNING: NVDEC unavailable ({str(e)[:200]}); "
                   f"falling back to ffmpeg software decode", file=sys.stderr)
-    return FfmpegSource(path, interval, hw=False)
+    return FfmpegSource(path, interval, hw=False), interval
 
 
 def iter_frames(src):
@@ -719,7 +813,7 @@ def process(input_path: Path, input_root: Path, output_root: Path,
 
     t0 = time.time()
     try:
-        src = open_source(input_path, interval)
+        src, interval = open_source(input_path, interval)
     except Exception as e:  # noqa: BLE001
         print(f"ERROR: cannot open {input_path}: {e}", file=sys.stderr)
         return 1

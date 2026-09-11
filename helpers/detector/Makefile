@@ -54,8 +54,10 @@ CUDA_INDEX  ?= https://download.pytorch.org/whl/cu126
 # cv2), nvdec, ffmpeg, cv2. Empty = worker default (auto). On a GPU node the
 # decoder, not the model, is the bottleneck - see README "NVDEC".
 DECODE      ?=
-# INTERVAL_SCALE multiplies every camera's sample interval. Empty = worker
-# default (auto: 0.25 on CUDA nodes, 1.0 elsewhere). See README "Sampling".
+# DECODE_KEYFRAMES: auto (keyframe-only decode when interval >= GOP), 1, 0.
+# INTERVAL_SCALE multiplies every camera's sample interval. Both empty =
+# worker defaults. See README "Sampling density and decode cost".
+DECODE_KEYFRAMES ?=
 INTERVAL_SCALE ?=
 # ACCEL picks the CPU export format: openvino (Intel) or ncnn (ARM).
 ACCEL       ?= openvino
@@ -72,7 +74,8 @@ RUNNER      := $(PREFIX)/run_detection.sh
 RUNENV      := RECORDINGS=$(RECORDINGS) DETECTIONS=$(DETECTIONS) \
                JOBLOG=$(JOBLOG) JOBS=$(JOBS) $(if $(DETECT_MODEL),DETECT_MODEL=$(DETECT_MODEL),) \
                $(if $(DECODE),DECODE=$(DECODE),) $(if $(DECODE_THREADS),DECODE_THREADS=$(DECODE_THREADS),) \
-               $(if $(INTERVAL_SCALE),INTERVAL_SCALE=$(INTERVAL_SCALE),)
+               $(if $(INTERVAL_SCALE),INTERVAL_SCALE=$(INTERVAL_SCALE),) \
+               $(if $(DECODE_KEYFRAMES),DECODE_KEYFRAMES=$(DECODE_KEYFRAMES),)
 
 SCRIPTS     := detect_worker.py run_detection.sh prune_detections.sh build_index.py
 # Version is whatever git says about this checkout, stamped into
@@ -262,6 +265,15 @@ doctor:
 	       && ffmpeg -hide_banner -loglevel error -c:v h264_cuvid -i /tmp/.nvdec-probe.mp4 -f null - 2>/dev/null; then \
 	    rm -f /tmp/.nvdec-probe.mp4; echo "ok  (h264_cuvid decoded a test clip; DECODE=auto will use it)"; \
 	  else rm -f /tmp/.nvdec-probe.mp4; echo "FAILED — h264_cuvid present but could not decode (driver/libnvcuvid mismatch?)"; fi
+	@printf "%-22s" "keyframes:"; \
+	  f=$$(find $(RECORDINGS) -maxdepth 1 -name '*.mp4' -mmin +2 2>/dev/null | head -1); \
+	  if [ -z "$$f" ]; then echo "n/a (no recording to probe)"; \
+	  elif ! command -v ffprobe >/dev/null; then echo "n/a (no ffprobe)"; \
+	  else g=$$(ffprobe -v error -skip_frame nokey -select_streams v:0 -show_entries frame=pts_time \
+	         -of csv=p=0 -read_intervals %+20 "$$f" 2>/dev/null | tr -d , \
+	         | awk 'NR>1 && $$1>p {print $$1-p} {p=$$1}' | sort -n | awk '{d[NR]=$$1} END{if(NR) printf "%.2f", d[int((NR+1)/2)]}'); \
+	    if [ -z "$$g" ]; then echo "GOP unknown on $$(basename $$f) — keyframe mode off for such files"; \
+	    else echo "GOP $${g}s on $$(basename $$f) — keyframe-only decode for cameras with interval >= $$(awk "BEGIN{printf \"%.1f\", $$g*0.9}")s"; fi; fi
 	@printf "%-22s" "recordings:";       [ -d $(RECORDINGS) ] && \
 	    echo "ok  ($(RECORDINGS), $$(find $(RECORDINGS) -maxdepth 1 -name '*.mp4' 2>/dev/null | wc -l) mp4 at top level)" \
 	    || echo "MISSING — $(RECORDINGS) not present (nfs not mounted?)"
@@ -428,6 +440,7 @@ test:
 	$(if $(DETECT_MODEL),DETECT_MODEL=$(DETECT_MODEL),) \
 	$(if $(DECODE),DECODE=$(DECODE),) \
 	$(if $(INTERVAL_SCALE),INTERVAL_SCALE=$(INTERVAL_SCALE),) \
+	$(if $(DECODE_KEYFRAMES),DECODE_KEYFRAMES=$(DECODE_KEYFRAMES),) \
 	CAMERA_RULES=$(PREFIX)/$(CONFIG) \
 	$(PY) $(PREFIX)/detect_worker.py --input "$$f" \
 	    --input-root $(RECORDINGS) --output-root /tmp/detect-test; \

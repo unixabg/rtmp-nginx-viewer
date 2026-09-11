@@ -67,8 +67,8 @@ make purge         # also deletes the detections tree (prompts first)
 ```
 
 Useful variables: `PREFIX` (default `/opt/detection`), `RECORDINGS`,
-`DETECTIONS`, `JOBS`, `GPU`, `CUDA_INDEX`, `DECODE`, `INTERVAL_SCALE`,
-`ACCEL`, `DETECT_MODEL`, `NICE`. `make install`
+`DETECTIONS`, `JOBS`, `GPU`, `CUDA_INDEX`, `DECODE`, `DECODE_KEYFRAMES`,
+`INTERVAL_SCALE`, `ACCEL`, `DETECT_MODEL`, `NICE`. `make install`
 never overwrites an existing `cameras.json`, and `make upgrade` refreshes
 scripts and Python packages while leaving your config and detections alone.
 
@@ -263,10 +263,12 @@ process alongside inference instead of before it.
 
 Nothing to configure. `DECODE=auto` (the default) picks, per file:
 
-1. **nvdec** — if `/dev/nvidiactl` exists, `ffmpeg` has `*_cuvid` decoders,
+1. **keyframes** — if the sample interval is at least the file's GOP
+   (`DECODE_KEYFRAMES`, see 2b); software, and by far the cheapest;
+2. **nvdec** — if `/dev/nvidiactl` exists, `ffmpeg` has `*_cuvid` decoders,
    and the decoder actually starts on this file;
-2. **ffmpeg** — software decode, one thread per worker (`DECODE_THREADS`);
-3. **cv2** — the original OpenCV loop, when there is no `ffmpeg` binary.
+3. **ffmpeg** — software decode, one thread per worker (`DECODE_THREADS`);
+4. **cv2** — the original OpenCV loop, when there is no `ffmpeg` binary.
 
 A mixed cluster therefore does the right thing per node without per-node
 settings. Force a decoder with `DECODE=nvdec|ffmpeg|cv2` (env, or
@@ -327,10 +329,10 @@ Notes:
 * Nodes without a GPU are unaffected: `auto` lands on `ffmpeg` (or `cv2`),
   and those paths produce identical manifests to before. `cv2` remains
   the choice for a box where installing `ffmpeg` is not wanted.
-* The lever that would actually cut decode work — on every node, GPU or
-  not — is decoding only keyframes (`-skip_frame nokey`) when the
-  cameras' keyframe interval is close to the sample interval. That is
-  not implemented yet; it depends on the GOP the cameras produce.
+* The lever that actually cuts decode work — on every node, GPU or not —
+  is keyframe-only decode, which `auto` prefers over NVDEC whenever the
+  interval allows it. See "Sampling density and decode cost" under 2b.
+  NVDEC only comes into play for cameras opted into sub-GOP sampling.
 
 ## 2b. Per-camera detection rules (cameras.json)
 
@@ -349,7 +351,8 @@ wins**, so list specific patterns above general ones:
 {
   "rules": [
     { "pattern": "Camera1-*",  "note": "front door",
-      "classes": ["person", "backpack", "suitcase"], "interval": 1.0 },
+      "classes": ["person", "backpack", "suitcase"], "interval": 1.0,
+      "gpu_interval": 0.25 },
     { "pattern": "Camera3?-*", "note": "indoor 30-39",
       "classes": ["person"] },
     { "pattern": "*-parking-*", "note": "lot",
@@ -358,7 +361,7 @@ wins**, so list specific patterns above general ones:
   ],
   "default": {
     "classes": ["person", "car", "truck", "bicycle", "motorcycle", "bus", "dog"],
-    "conf": 0.45, "min_area": 1500, "interval": 2.0, "gpu_interval": 0.5
+    "conf": 0.45, "min_area": 1500, "interval": 2.0
   }
 }
 ```
@@ -371,7 +374,7 @@ Per-rule keys (only `classes` is required; the rest inherit from `default`):
 | `conf` | confidence threshold; raise it if a scene throws false positives |
 | `min_area` | motion-gate px²; raise for cameras with trees/rain/traffic |
 | `interval` | seconds between sampled frames; lower for doors and driveways |
-| `gpu_interval` | interval used instead on a node with a CUDA GPU (see below) |
+| `gpu_interval` | interval used instead on a node with a CUDA GPU; opts this camera into dense sampling at the cost of a full decode (see below) |
 | `keepalive` | seconds between forced looks in a still scene (default 30, 0 = off) |
 
 Useful COCO classes: `person`, `bicycle`, `car`, `motorcycle`, `bus`,
@@ -412,31 +415,50 @@ If you want species outside COCO, in rough order of effort:
   labelled clips of your own — your recordings are the training set, and
   a few hundred examples per species goes a long way.
 
-### Sampling density: GPU nodes look more often
+### Sampling density and decode cost
 
-Every frame has to be decoded whatever the sample interval — an H.264 frame
-depends on the ones before it — so decode cost is fixed per file and the
-interval only changes how many frames reach the motion gate and, past it,
-the model. On a CPU node the model is the expensive part and a sparse
-sample is the right trade. On a GPU node inference is ~10 ms, so the
-marginal cost of a sample is the gate (a few ms). Sampling four times as
-often costs about a second per 5-minute file and is what catches a car
-that crosses the frame in under two seconds.
+Two facts decide how much a file costs to analyze:
 
-So on a node where the worker has CUDA, the interval is reduced:
+1. **An H.264 frame depends on the ones before it**, so a decoder normally
+   has to decode every frame to reach the sampled one — 50 decodes per
+   sample at 25 fps and a 2 s interval. That is where a CPU node spends
+   ~90 % of its time, and a GPU node too: on the i7-4770 / RTX 3070 box
+   inference was 0.3 s of a 15 s file.
+2. **Keyframes don't.** They are decoded standalone, and cameras emit one
+   every GOP (the box above: exactly 2 s). If the sample interval is at
+   least the GOP, every sample can be a keyframe and `ffmpeg -skip_frame
+   nokey` parses-and-discards the frames between without decoding them.
+   Measured: 0.9 s instead of 9.9 s for a 60 s 1440p clip, identical
+   samples and timestamps.
 
-* `gpu_interval` on a rule (or in `default`) is used verbatim;
-* otherwise `interval × INTERVAL_SCALE`, where `INTERVAL_SCALE=auto`
-  (the default) means 0.25 on CUDA nodes and 1.0 elsewhere. Set
-  `INTERVAL_SCALE=1` on a GPU node to keep the configured intervals, or
-  any number to force a scale on any node; `GPU_INTERVAL_SCALE` changes
-  what `auto` means. Floor is 0.1 s.
+So the default on every node is **keyframe-only decode** whenever the
+interval allows it. `DECODE_KEYFRAMES=auto` probes each file's GOP (first
+20 s, cheap) and uses keyframe mode when `interval ≥ 0.9 × GOP`; sample
+times snap to the actual keyframe timestamps. `DECODE_KEYFRAMES=1` forces
+it (raising the interval to the GOP if needed); `0` disables it. It is a
+software path — decoding one frame per GOP is negligible anywhere, so
+NVDEC is never used for it.
 
-CPU nodes are unaffected. The manifest's `worker.interval_from` says which
-applied (`rule`, `gpu_interval`, or `scale=0.25`), so a dense GPU sample
-and a sparse CPU sample of the same camera can be told apart in a mixed
-cluster. Tracks will show more `frames` and slightly earlier
-`first_seen` on GPU nodes; nothing downstream depends on the interval.
+Sampling *below* the GOP is the opposite trade: it buys time resolution
+(a car crossing the frame in under 2 s) for a full decode of the file,
+about 10× the cost. That is worth it on a GPU node — inference is ~10 ms,
+so the marginal cost of a sample is the motion gate — but only for cameras
+where it matters, so it is opt-in per camera:
+
+* `gpu_interval` on a rule (or in `default`) is used verbatim when the
+  worker has CUDA; CPU nodes ignore it and use `interval`.
+* `INTERVAL_SCALE` multiplies the interval of cameras without a
+  `gpu_interval`: `auto` (default) is `GPU_INTERVAL_SCALE` on CUDA nodes,
+  which itself defaults to 1.0 — so nothing changes unless you ask. Set
+  `GPU_INTERVAL_SCALE=0.25` on a GPU node to densify every camera (and
+  accept full decode on all of them), or `INTERVAL_SCALE=<n>` to force a
+  scale on any node. Floor is 0.1 s.
+
+The manifest records `timing.decoder` (`keyframes`, `ffmpeg`, `nvdec`,
+`cv2`) and `worker.interval_from` (`rule`, `gpu_interval`, `scale=N`), so
+a dense GPU sample and a keyframe sample of the same camera can be told
+apart in a mixed cluster, and `make bench` groups on the decoder. On the
+GPU box, `bench` therefore shows the cost of each choice side by side.
 
 Notes:
 
