@@ -98,19 +98,15 @@ DECODE_THREADS = int(os.environ.get("DECODE_THREADS", "1"))
 KEYFRAMES = os.environ.get("DECODE_KEYFRAMES", "auto").lower()
 KEYFRAME_MIN_RATIO = 0.9
 GOP_PROBE_SEC = 20
-# Decode frames no wider than this (0 = source resolution, the default).
-# The idea: nothing downstream needs full resolution - the model runs at
-# 640x640 and the motion gate at 480 wide - so scaling inside ffmpeg
-# should save the BGR24 conversion and ~11 MB per frame through the pipe.
-# Measured a 5x saving in standalone ffmpeg runs, but NOT in the worker:
-# 862 files at source resolution averaged 9.7s against 200 files at 1280
-# averaging 11.7s, a 17% regression. Frames are consumed one at a time as
-# the Python side is ready, so the pipe is never the constraint and the
-# swscale pass is pure added cost. Left as an option because a slower
-# node (a Pi decoding 1440p) may balance differently; bench's
-# decoder@width column makes it a one-tick experiment. Boxes are scaled
-# back to source coordinates before the manifest either way.
-DECODE_MAX_W = int(os.environ.get("DECODE_MAX_W", "0"))
+# Decode frames no wider than this (0 = source resolution). Nothing
+# downstream needs full resolution - the model runs at 640x640 and the
+# motion gate at 480 wide - but a 1440p frame still costs a BGR24
+# conversion and ~11 MB through the pipe. Scaling inside ffmpeg cut
+# decode+convert from 6.5s to 1.3s per 60s 1440p clip. Boxes are scaled
+# back to source coordinates before they reach the manifest, so numbers
+# stay comparable across nodes; thumbnails are cropped from the scaled
+# frame and so are lower resolution (they are 640 wide anyway).
+DECODE_MAX_W = int(os.environ.get("DECODE_MAX_W", "1280"))
 # Denser sampling on GPU nodes. With inference at ~10 ms, sampling more
 # often costs only the motion gate - but an interval below the camera's
 # keyframe spacing gives up keyframe-only decode (below), which is a much
@@ -736,7 +732,11 @@ def is_stationary(tr, frac=STATIONARY_FRAC):
     """
     cs = tr["centres"]
     if len(cs) < 2:
-        return False
+        # One position is no evidence either way. Returning False here used
+        # to mean "moving", which put every marginal single-frame detection
+        # on the viewer as an event - and the parked/static filter could
+        # not reach it, because nothing had been judged. Say so instead.
+        return None
     ref = _median(tr["diags"])
     mx = _median([c[0] for c in cs])
     my = _median([c[1] for c in cs])
@@ -916,7 +916,11 @@ def process(input_path: Path, input_root: Path, output_root: Path,
             "duration": round(tr["last_seen"] - tr["first_seen"], 2),
             "frames": tr["frames"],
             "conf_max": tr["conf_max"],
-            "stationary": stationary,
+            # True/False as before; a track seen once is unjudged, and
+            # reports stationary false + judged false so that readers which
+            # predate this field still see the old two-state behaviour.
+            "stationary": bool(stationary),
+            "judged": stationary is not None,
             "box_first": tr["box_first"],
             "box_last": tr["box_last"],
             "motion": stationary_stats(tr),
@@ -934,7 +938,7 @@ def process(input_path: Path, input_root: Path, output_root: Path,
         tracks.append(entry)
 
     labels = sorted({tr["label"] for tr in tracks})
-    moving = [tr for tr in tracks if not tr["stationary"]]
+    moving = [tr for tr in tracks if not tr["stationary"] and tr["judged"]]
     t_thumb = time.perf_counter() - t_thumb
     wall = time.time() - t0
     video_sec = src.video_sec
@@ -969,7 +973,11 @@ def process(input_path: Path, input_root: Path, output_root: Path,
         "labels": labels,
         "event_count": len(tracks),
         "moving_count": len(moving),
-        "stationary_count": len(tracks) - len(moving),
+        "stationary_count": sum(1 for tr in tracks if tr["stationary"]),
+        # Seen in a single frame, so neither moving nor stationary could be
+        # established. Usually a detection sitting on the confidence
+        # threshold; kept in the manifest, hidden by default in the viewer.
+        "unjudged_count": sum(1 for tr in tracks if not tr["judged"]),
         "tracks": tracks,
         "timing": timing,
         # Which machine produced this, so timings from a mixed fleet can be
@@ -995,10 +1003,12 @@ def process(input_path: Path, input_root: Path, output_root: Path,
     tmp = manifest_path.with_suffix(manifest_path.suffix + ".tmp")
     tmp.write_text(json.dumps(manifest, indent=1))
     tmp.rename(manifest_path)
-    stat_n = len(tracks) - len(moving)
+    stat_n = sum(1 for tr in tracks if tr["stationary"])
+    unj_n = sum(1 for tr in tracks if not tr["judged"])
     rt = timing["realtime_factor"]
     print(f"done: {input_path.name} tracks={len(tracks)} "
-          f"(moving={len(moving)}, stationary={stat_n}) labels={labels} "
+          f"(moving={len(moving)}, stationary={stat_n}"
+          + (f", unjudged={unj_n}" if unj_n else "") + f") labels={labels} "
           f"| {timing['wall_sec']}s"
           + (f" for {timing['video_sec']}s video = {rt}x realtime" if rt else "")
           + f" | decode {timing['decode_sec']}s ({src.name}), gate {timing['motion_gate_sec']}s, "
@@ -1044,7 +1054,7 @@ def record_failure(input_path, input_root, output_root, err: str) -> int:
         "error": err.splitlines()[-1] if err else "unknown",
         "attempts": attempts,
         "labels": [], "event_count": 0, "moving_count": 0,
-        "stationary_count": 0, "tracks": [],
+        "stationary_count": 0, "unjudged_count": 0, "tracks": [],
         "host": {"name": socket.gethostname(), "model": MODEL_PATH},
         "worker": {"version": VERSION, "model": MODEL_PATH},
     }

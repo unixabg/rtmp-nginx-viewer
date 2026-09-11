@@ -125,6 +125,11 @@ def main():
                     "conf": tr.get("conf_max"),
                     "dur": tr.get("duration", 0),
                     "still": bool(tr.get("stationary")),
+                    # Seen once, so never judged moving or stationary.
+                    # Manifests written before this field existed have no
+                    # opinion, so treat them as judged: they keep their
+                    # old two-state behaviour rather than all going quiet.
+                    "unj": not tr.get("judged", True),
                     "t": tr.get("first_seen", 0),
                     "src": src,
                     "thumb": (f"{thumbs_rel}/{tr['thumb']}"

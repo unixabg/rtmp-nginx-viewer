@@ -110,7 +110,7 @@
     content:attr(data-label); position:absolute; inset:0; display:grid;
     place-items:center; color:var(--faint); font-size:.8rem;
   }
-  .cell.still img{filter:saturate(.35) brightness(.92)}
+  .cell.still img, .cell.unj img{filter:saturate(.35) brightness(.92)}
   /* stamp sits on the image, so it stays light-on-dark whatever the theme */
   .stamp{
     position:absolute; left:0; right:0; bottom:0;
@@ -194,7 +194,7 @@
   <div class="filters">
     <select id="camera"><option value="">All cameras</option></select>
     <select id="label"><option value="">All objects</option></select>
-    <label class="toggle"><input type="checkbox" id="hideStill" checked> Hide parked and static</label>
+    <label class="toggle"><input type="checkbox" id="hideStill" checked> Hide parked, static, and unconfirmed</label>
   </div>
 </header>
 
@@ -296,8 +296,13 @@ function fill(sel, values, allText){
 function render(){
   const cam = el("camera").value, lab = el("label").value,
         hide = el("hideStill").checked;
+  /* "hide" covers both parked objects and single-sighting detections that
+     were never judged moving or stationary - typically a detection sitting
+     on the confidence threshold, which has no evidence behind it either
+     way. Older index shards have no unj field and are unaffected. */
+  const quiet = r => r.still || r.unj;
   const list = rows.filter(r =>
-    (!cam || r.camera === cam) && (!lab || r.label === lab) && !(hide && r.still));
+    (!cam || r.camera === cam) && (!lab || r.label === lab) && !(hide && quiet(r)));
 
   el("count").textContent = list.length
     ? `${list.length} of ${rows.length} on ${day}` : "";
@@ -308,10 +313,10 @@ function render(){
     /* Say which filter is actually responsible: only blame the static
        toggle if unticking it would really reveal something. */
     const hidden = rows.filter(r =>
-      (!cam || r.camera === cam) && (!lab || r.label === lab) && r.still).length;
+      (!cam || r.camera === cam) && (!lab || r.label === lab) && quiet(r)).length;
     return showEmpty("Nothing matches these filters",
       hide && hidden
-        ? `${hidden} parked or static ${hidden === 1 ? "object is" : "objects are"} hidden. Untick the filter to see them.`
+        ? `${hidden} parked, static or unconfirmed ${hidden === 1 ? "object is" : "objects are"} hidden. Untick the filter to see them.`
         : "Try another camera, object, or day.");
   }
   view = list; shown = 0;
@@ -322,7 +327,8 @@ function render(){
 
 function cell(r){
   const b = document.createElement("button");
-  b.className = "cell" + (r.still ? " still" : "") + (r.thumb ? "" : " noimg");
+  b.className = "cell" + (r.still ? " still" : "") + (r.unj ? " unj" : "")
+              + (r.thumb ? "" : " noimg");
   b.dataset.label = r.label;
   b.onclick = () => openDetail(r);
   if(r.thumb){
@@ -333,6 +339,7 @@ function cell(r){
     b.appendChild(img);
   }
   if(r.still) b.insertAdjacentHTML("beforeend", `<span class="parked">static</span>`);
+  else if(r.unj) b.insertAdjacentHTML("beforeend", `<span class="parked">seen once</span>`);
   b.insertAdjacentHTML("beforeend",
     `<span class="stamp"><span class="dot ${family(r.label)}"></span>` +
     `<span class="time">${r.clock}</span>` +
