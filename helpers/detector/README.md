@@ -635,7 +635,21 @@ files with `--force` if you want them measured.
 are removed after `THUMB_DAYS` (default 30, matching recording retention);
 tiny JSON manifests are kept `MANIFEST_DAYS` (default 90) so you keep a
 searchable "person on cam03 at 14:05" index even after the video is gone.
-Orphaned manifests whose source video has been recycled are also cleaned up.
+Orphaned manifests whose source video has been recycled are also cleaned up,
+along with failure markers and an over-long joblog.
+
+Both values are Makefile variables, so they reach the manual run *and* the
+generated cron entry — no hand-editing a generated file:
+
+```
+make prune PROFILE=viewer THUMB_DAYS=7 MANIFEST_DAYS=10
+make install-cron PROFILE=viewer THUMB_DAYS=7 MANIFEST_DAYS=10
+```
+
+`PRUNE_AT` sets when it runs (default `30 2`, i.e. 02:30). Don't add a
+second cron file for pruning: `install-cron` already writes the entry, and
+a hand-written one would both double up and be overwritten on the next
+install.
 
 ## 6. Latency characteristic
 

@@ -34,6 +34,14 @@ NICE        ?= nice -n 15 ionice -c3
 # GPU=1 installs CUDA-enabled torch; default is the slim CPU wheel set.
 CRON_LIMIT  ?= 40    # max files per scheduled sweep; newest first
 LOGFILE     ?= /var/log/detection.log
+# Retention for the detections tree. Thumbnails are the bulky part, so they
+# usually expire with the recordings; the tiny JSON manifests are kept longer
+# as a searchable index of what happened.
+THUMB_DAYS    ?= 30
+MANIFEST_DAYS ?= 90
+# When the nightly prune runs: "minute hour". Keep the comment off this
+# line — make would include the trailing spaces in the value.
+PRUNE_AT      ?= 30 2
 GPU         ?= 0
 # ACCEL picks the CPU export format: openvino (Intel) or ncnn (ARM).
 ACCEL       ?= openvino
@@ -70,8 +78,9 @@ help:
 	    awk -F': ' '{printf "  %-18s %s\n", $$1, $$2}'
 	@echo
 	@echo "current settings (override on the command line):"
-	@printf "  %-12s %s\n" PREFIX $(PREFIX) RECORDINGS $(RECORDINGS) \
-	    DETECTIONS $(DETECTIONS) JOBS $(JOBS) GPU $(GPU) ACCEL $(ACCEL)
+	@printf "  %-14s %s\n" PREFIX $(PREFIX) RECORDINGS $(RECORDINGS) \
+	    DETECTIONS $(DETECTIONS) JOBS $(JOBS) GPU $(GPU) ACCEL $(ACCEL) \
+	    THUMB_DAYS $(THUMB_DAYS) MANIFEST_DAYS $(MANIFEST_DAYS)
 	@echo
 	@echo "  tip: PROFILE=viewer switches to /videos paths"
 
@@ -309,9 +318,11 @@ if old: print('%d manifest(s) predate timing; --force to re-measure'%old)
 endef
 export BENCH_PY
 
-## prune: apply the retention policy to the detections tree
+## prune: apply the retention policy now (THUMB_DAYS=, MANIFEST_DAYS=)
 prune:
-	DETECTIONS=$(DETECTIONS) RECORDINGS=$(RECORDINGS) $(PREFIX)/prune_detections.sh
+	DETECTIONS=$(DETECTIONS) RECORDINGS=$(RECORDINGS) \
+	  THUMB_DAYS=$(THUMB_DAYS) MANIFEST_DAYS=$(MANIFEST_DAYS) \
+	  $(PREFIX)/prune_detections.sh
 
 ## install-cron: every 10 min under flock, nightly prune, plus log rotation
 install-cron: install-logrotate
@@ -320,7 +331,7 @@ install-cron: install-logrotate
 	  'SHELL=/bin/bash' \
 	  'PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin' \
 	  '*/10 * * * * $(shell whoami) flock -n /tmp/detect.lock env $(RUNENV) $(NICE) $(RUNNER) --limit $(CRON_LIMIT) >> $(LOGFILE) 2>&1 && $(PY) $(PREFIX)/build_index.py --detections $(DETECTIONS) >> $(LOGFILE) 2>&1' \
-	  '30 2 * * * $(shell whoami) DETECTIONS=$(DETECTIONS) RECORDINGS=$(RECORDINGS) $(PREFIX)/prune_detections.sh >> $(LOGFILE) 2>&1' \
+	  '$(PRUNE_AT) * * * $(shell whoami) DETECTIONS=$(DETECTIONS) RECORDINGS=$(RECORDINGS) THUMB_DAYS=$(THUMB_DAYS) MANIFEST_DAYS=$(MANIFEST_DAYS) $(PREFIX)/prune_detections.sh >> $(LOGFILE) 2>&1' \
 	  | sudo tee /etc/cron.d/detection >/dev/null
 	sudo chmod 644 /etc/cron.d/detection
 	@sudo touch $(LOGFILE) && sudo chown $(shell whoami) $(LOGFILE)
