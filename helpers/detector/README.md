@@ -67,8 +67,8 @@ make purge         # also deletes the detections tree (prompts first)
 ```
 
 Useful variables: `PREFIX` (default `/opt/detection`), `RECORDINGS`,
-`DETECTIONS`, `JOBS`, `GPU`, `CUDA_INDEX`, `DECODE`, `ACCEL`, `DETECT_MODEL`,
-`NICE`. `make install`
+`DETECTIONS`, `JOBS`, `GPU`, `CUDA_INDEX`, `DECODE`, `INTERVAL_SCALE`,
+`ACCEL`, `DETECT_MODEL`, `NICE`. `make install`
 never overwrites an existing `cameras.json`, and `make upgrade` refreshes
 scripts and Python packages while leaving your config and detections alone.
 
@@ -300,21 +300,37 @@ After switching, expect `decode%` to fall sharply, `wall_s` to approach the
 model's own time, and `infer_ms` to return to the single-worker figure
 (the 38 ms above is the GPU waiting on a starved CPU, not the card).
 
+**Measured, and not what was hoped for.** On the i7-4770 / RTX 3070 box
+with 2560×1440 25 fps H.264 recordings, `DECODE=nvdec` decoded a 5-minute
+segment in 12.98 s — the same as the CPU's 12.47 s — and with four workers
+`nvidia-smi dmon` showed the `dec` engine pinned at 100 %. A consumer card
+has one NVDEC block, and at 1440p it delivers roughly 580 frames/s
+*in total*, shared across every worker: about 23× realtime for the whole
+box, less than four CPU cores decoding in software. NVDEC is a separate
+engine from the CUDA cores, so it does not slow inference, but on this
+hardware and resolution it is not faster than the CPU either — it is a
+fifth decoder of similar speed, which is only a win if the CPU has no
+cores to spare. That is the `auto` heuristic's weakness: it prefers
+NVDEC whenever it exists. Set `DECODE=ffmpeg` on a node like this one.
+
 Notes:
 
-* NVDEC is a separate engine from the CUDA cores, so running it does not
-  slow inference. A 3070's single NVDEC handles several 1080p streams
-  faster than realtime — plenty for `JOBS=4`; the sampled frames are
-  copied to system memory (about 3 MB each) but at 1 frame per 2 s that is
-  noise.
-* With decode off the CPU, `JOBS` is no longer capped by core count for
-  decode reasons; the remaining CPU work per worker is the motion gate,
-  thumbnails, and feeding the model. Re-run `make bench` after changing it.
+* NVDEC throughput scales with resolution: 1080p streams would get
+  roughly 1.8× the frame rate above, and the newer decoders on 40/50-series
+  cards and dual-NVDEC datacenter parts change the math again. Measure
+  with `nvidia-smi dmon -s u` (`dec` column) before deciding.
+* The sampled frames are copied to system memory (about 5 MB each at
+  1440p), but at a frame every half second that is noise; the `sm` load
+  visible during NVDEC runs is `cuvid` moving frames it then discards.
 * There is no NVDEC path for the motion gate or thumbnails; they stay on
   the CPU and are small.
 * Nodes without a GPU are unaffected: `auto` lands on `ffmpeg` (or `cv2`),
   and those paths produce identical manifests to before. `cv2` remains
   the choice for a box where installing `ffmpeg` is not wanted.
+* The lever that would actually cut decode work — on every node, GPU or
+  not — is decoding only keyframes (`-skip_frame nokey`) when the
+  cameras' keyframe interval is close to the sample interval. That is
+  not implemented yet; it depends on the GOP the cameras produce.
 
 ## 2b. Per-camera detection rules (cameras.json)
 
@@ -342,7 +358,7 @@ wins**, so list specific patterns above general ones:
   ],
   "default": {
     "classes": ["person", "car", "truck", "bicycle", "motorcycle", "bus", "dog"],
-    "conf": 0.45, "min_area": 1500, "interval": 2.0
+    "conf": 0.45, "min_area": 1500, "interval": 2.0, "gpu_interval": 0.5
   }
 }
 ```
@@ -355,6 +371,7 @@ Per-rule keys (only `classes` is required; the rest inherit from `default`):
 | `conf` | confidence threshold; raise it if a scene throws false positives |
 | `min_area` | motion-gate px²; raise for cameras with trees/rain/traffic |
 | `interval` | seconds between sampled frames; lower for doors and driveways |
+| `gpu_interval` | interval used instead on a node with a CUDA GPU (see below) |
 | `keepalive` | seconds between forced looks in a still scene (default 30, 0 = off) |
 
 Useful COCO classes: `person`, `bicycle`, `car`, `motorcycle`, `bus`,
@@ -394,6 +411,32 @@ If you want species outside COCO, in rough order of effort:
   classifier is the accurate-but-involved route. Or fine-tune YOLO on
   labelled clips of your own — your recordings are the training set, and
   a few hundred examples per species goes a long way.
+
+### Sampling density: GPU nodes look more often
+
+Every frame has to be decoded whatever the sample interval — an H.264 frame
+depends on the ones before it — so decode cost is fixed per file and the
+interval only changes how many frames reach the motion gate and, past it,
+the model. On a CPU node the model is the expensive part and a sparse
+sample is the right trade. On a GPU node inference is ~10 ms, so the
+marginal cost of a sample is the gate (a few ms). Sampling four times as
+often costs about a second per 5-minute file and is what catches a car
+that crosses the frame in under two seconds.
+
+So on a node where the worker has CUDA, the interval is reduced:
+
+* `gpu_interval` on a rule (or in `default`) is used verbatim;
+* otherwise `interval × INTERVAL_SCALE`, where `INTERVAL_SCALE=auto`
+  (the default) means 0.25 on CUDA nodes and 1.0 elsewhere. Set
+  `INTERVAL_SCALE=1` on a GPU node to keep the configured intervals, or
+  any number to force a scale on any node; `GPU_INTERVAL_SCALE` changes
+  what `auto` means. Floor is 0.1 s.
+
+CPU nodes are unaffected. The manifest's `worker.interval_from` says which
+applied (`rule`, `gpu_interval`, or `scale=0.25`), so a dense GPU sample
+and a sparse CPU sample of the same camera can be told apart in a mixed
+cluster. Tracks will show more `frames` and slightly earlier
+`first_seen` on GPU nodes; nothing downstream depends on the interval.
 
 Notes:
 

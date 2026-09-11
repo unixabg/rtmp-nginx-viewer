@@ -80,6 +80,17 @@ DECODE = os.environ.get("DECODE", "auto").lower()
 # Threads per ffmpeg software decoder. 1 is right when several workers run
 # in parallel (each worker = one core); raise it only for a single worker.
 DECODE_THREADS = int(os.environ.get("DECODE_THREADS", "1"))
+# Denser sampling where it is cheap. Every frame is decoded regardless of
+# the sample interval (H.264 frames depend on their predecessors), so on a
+# node where inference is ~10 ms the only cost of sampling more often is
+# the motion gate - and a car crossing the frame in under one interval is
+# the thing a sparse sample misses. INTERVAL_SCALE multiplies every
+# camera's interval: "auto" = GPU_INTERVAL_SCALE when CUDA is available,
+# 1.0 otherwise; or a number to force it. A per-camera "gpu_interval" in
+# cameras.json takes precedence over the scale on CUDA nodes.
+INTERVAL_SCALE = os.environ.get("INTERVAL_SCALE", "auto").lower()
+GPU_INTERVAL_SCALE = float(os.environ.get("GPU_INTERVAL_SCALE", "0.25"))
+MIN_INTERVAL_SEC = 0.1
 
 # ------------------------------------------------------------- tracking
 # Per-frame detections are grouped into TRACKS so one object seen across
@@ -163,6 +174,42 @@ def rules_for(filename: str, cfg: dict) -> dict:
             merged.update(rule)
             return merged
     return dict(cfg["default"])
+
+
+_cuda = None
+
+
+def has_cuda() -> bool:
+    """CUDA visible to torch? Cached; torch is imported by the detector
+    anyway so this costs nothing extra on a CPU node beyond the import."""
+    global _cuda
+    if _cuda is None:
+        try:
+            import torch
+            _cuda = bool(torch.cuda.is_available())
+        except Exception:  # noqa: BLE001
+            _cuda = False
+    return _cuda
+
+
+def effective_interval(rule: dict, cfg: dict):
+    """(interval_sec, how) for this file on this node.
+
+    how is a short string for the manifest: 'rule', 'gpu_interval',
+    'scale=0.25', so a reader can tell why two nodes sampled a camera
+    differently."""
+    base = float(rule.get("interval", cfg.get("default", {})
+                          .get("interval", FRAME_INTERVAL_SEC)))
+    gpu = has_cuda()
+    if gpu and "gpu_interval" in rule:
+        return max(float(rule["gpu_interval"]), MIN_INTERVAL_SEC), "gpu_interval"
+    if INTERVAL_SCALE == "auto":
+        scale = GPU_INTERVAL_SCALE if gpu else 1.0
+    else:
+        scale = float(INTERVAL_SCALE)
+    if scale == 1.0:
+        return base, "rule"
+    return max(base * scale, MIN_INTERVAL_SEC), f"scale={scale:g}"
 
 
 # ------------------------------------------------------------- decoding
@@ -653,7 +700,7 @@ def process(input_path: Path, input_root: Path, output_root: Path,
     classes = rule.get("classes", sorted(CLASSES_OF_INTEREST))
     conf = float(rule.get("conf", CONF_THRESHOLD))
     min_area = int(rule.get("min_area", MOTION_MIN_AREA))
-    interval = float(rule.get("interval", FRAME_INTERVAL_SEC))
+    interval, interval_how = effective_interval(rule, cfg)
     keepalive = float(rule.get("keepalive", KEEPALIVE_SEC))
 
     # An empty class list means "don't analyze this camera at all". Write a
@@ -811,7 +858,11 @@ def process(input_path: Path, input_root: Path, output_root: Path,
                    "model": MODEL_PATH,
                    "rule": rule.get("note", rule.get("pattern", "default")),
                    "classes": sorted(classes),
-                   "frame_interval_sec": interval,
+                   "frame_interval_sec": round(interval, 3),
+                   # 'rule', 'gpu_interval', or 'scale=N': why this
+                   # interval, so a dense GPU sample and a sparse CPU
+                   # sample of the same camera are distinguishable.
+                   "interval_from": interval_how,
                    "conf_threshold": conf,
                    "min_area": min_area,
                    "track_iou": TRACK_IOU,

@@ -16,6 +16,10 @@
     "               outdoor cameras where trees/rain trigger constant motion.",
     "  interval   - seconds between sampled frames (default 2.0). Lower for",
     "               cameras watching fast movement (driveways, doors).",
+    "  gpu_interval - interval to use instead when the worker has a CUDA GPU.",
+    "               Decode cost is the same at any interval, so a GPU node",
+    "               can sample far more often for almost nothing. Without",
+    "               this key, GPU nodes use interval * INTERVAL_SCALE (0.25).",
     "",
     "Useful COCO classes: person, bicycle, car, motorcycle, bus, truck,",
     "cat, dog, bird, backpack, handbag, suitcase.",
@@ -54,6 +58,7 @@
     "classes": ["person", "car", "truck", "bicycle", "motorcycle", "bus", "dog"],
     "conf": 0.45,
     "min_area": 1500,
-    "interval": 2.0
+    "interval": 2.0,
+    "gpu_interval": 0.5
   }
 }

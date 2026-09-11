@@ -54,6 +54,9 @@ CUDA_INDEX  ?= https://download.pytorch.org/whl/cu126
 # cv2), nvdec, ffmpeg, cv2. Empty = worker default (auto). On a GPU node the
 # decoder, not the model, is the bottleneck - see README "NVDEC".
 DECODE      ?=
+# INTERVAL_SCALE multiplies every camera's sample interval. Empty = worker
+# default (auto: 0.25 on CUDA nodes, 1.0 elsewhere). See README "Sampling".
+INTERVAL_SCALE ?=
 # ACCEL picks the CPU export format: openvino (Intel) or ncnn (ARM).
 ACCEL       ?= openvino
 MODEL       ?= yolo11n.pt
@@ -68,7 +71,8 @@ JOBLOG      := $(DETECTIONS)/.joblog
 RUNNER      := $(PREFIX)/run_detection.sh
 RUNENV      := RECORDINGS=$(RECORDINGS) DETECTIONS=$(DETECTIONS) \
                JOBLOG=$(JOBLOG) JOBS=$(JOBS) $(if $(DETECT_MODEL),DETECT_MODEL=$(DETECT_MODEL),) \
-               $(if $(DECODE),DECODE=$(DECODE),) $(if $(DECODE_THREADS),DECODE_THREADS=$(DECODE_THREADS),)
+               $(if $(DECODE),DECODE=$(DECODE),) $(if $(DECODE_THREADS),DECODE_THREADS=$(DECODE_THREADS),) \
+               $(if $(INTERVAL_SCALE),INTERVAL_SCALE=$(INTERVAL_SCALE),)
 
 SCRIPTS     := detect_worker.py run_detection.sh prune_detections.sh build_index.py
 # Version is whatever git says about this checkout, stamped into
@@ -423,6 +427,7 @@ test:
 	rm -rf /tmp/detect-test && mkdir -p /tmp/detect-test; \
 	$(if $(DETECT_MODEL),DETECT_MODEL=$(DETECT_MODEL),) \
 	$(if $(DECODE),DECODE=$(DECODE),) \
+	$(if $(INTERVAL_SCALE),INTERVAL_SCALE=$(INTERVAL_SCALE),) \
 	CAMERA_RULES=$(PREFIX)/$(CONFIG) \
 	$(PY) $(PREFIX)/detect_worker.py --input "$$f" \
 	    --input-root $(RECORDINGS) --output-root /tmp/detect-test; \
