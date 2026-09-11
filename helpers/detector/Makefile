@@ -312,6 +312,17 @@ SINCE_ARG = $(if $(SINCE),--from "$$(date -d "$$(echo '$(SINCE)' | sed -E \
     's/^([0-9]+)h$$/\1 hours ago/; s/^([0-9]+)m$$/\1 minutes ago/; s/^([0-9]+)d$$/\1 days ago/')" \
     '+%Y-%m-%d %H:%M')",)
 
+# The same window for a crontab, which needs two things SINCE_ARG cannot
+# give it. First, cron treats an unescaped % as a newline and feeds the
+# rest of the line to the command as stdin, so every % in the date format
+# must be backslash-escaped. Second, the cron line is assembled inside a
+# single-quoted printf argument, so the expression must contain no single
+# quotes of its own. The shorthand is expanded here, at install time; only
+# `date` runs from cron, so the window stays relative to each tick.
+SINCE_HUMAN = $(shell echo '$(SINCE)' | sed -E \
+    's/^([0-9]+)h$$/\1 hours ago/; s/^([0-9]+)m$$/\1 minutes ago/; s/^([0-9]+)d$$/\1 days ago/')
+CRON_SINCE_ARG = $(if $(SINCE),--from "$$(date -d "$(SINCE_HUMAN)" +\%Y-\%m-\%d\ \%H:\%M)" ,)
+
 ## run: process recordings (CAMERA=, SINCE=1h, FROM=/TO=, LIMIT=N, FORCE=1)
 run:
 	$(RUNENV) $(NICE) $(RUNNER) \
@@ -399,12 +410,13 @@ prune:
 	  $(PREFIX)/prune_detections.sh
 
 ## install-cron: every 10 min under flock, nightly prune, plus log rotation
+##               (SINCE=6h limits each tick to a rolling window)
 install-cron: install-logrotate
 	@echo "==> writing /etc/cron.d/detection"
 	@printf '%s\n' \
 	  'SHELL=/bin/bash' \
 	  'PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin' \
-	  '*/10 * * * * $(shell whoami) flock -n /tmp/detect.lock env $(RUNENV) $(NICE) $(RUNNER) --limit $(CRON_LIMIT) >> $(LOGFILE) 2>&1 && $(PY) $(PREFIX)/build_index.py --detections $(DETECTIONS) >> $(LOGFILE) 2>&1' \
+	  '*/10 * * * * $(shell whoami) flock -n /tmp/detect.lock env $(RUNENV) $(NICE) $(RUNNER) $(CRON_SINCE_ARG)--limit $(CRON_LIMIT) >> $(LOGFILE) 2>&1 && $(PY) $(PREFIX)/build_index.py --detections $(DETECTIONS) >> $(LOGFILE) 2>&1' \
 	  '$(PRUNE_AT) * * * $(shell whoami) DETECTIONS=$(DETECTIONS) RECORDINGS=$(RECORDINGS) THUMB_DAYS=$(THUMB_DAYS) MANIFEST_DAYS=$(MANIFEST_DAYS) $(PREFIX)/prune_detections.sh >> $(LOGFILE) 2>&1' \
 	  | sudo tee /etc/cron.d/detection >/dev/null
 	sudo chmod 644 /etc/cron.d/detection
