@@ -24,10 +24,12 @@ CPU. To use a Coral, an Nvidia GPU (TensorRT/ONNX), or a remote inference
 server, replace only the Detector class - the rest of the pipeline and the
 manifest format stay identical.
 
-The decoder is pluggable too (DECODE env var, see the tunables). Once the
-model is fast - a GPU node - decode is where all the time goes, so frames
-can come from the card's NVDEC engine via ffmpeg instead of the CPU. The
-manifest records which decoder produced the frames.
+The decoder is pluggable too (DECODE / DECODE_KEYFRAMES, see the tunables).
+Once the model is fast - a GPU node - decode is where all the time goes.
+The big saving is decoding only keyframes when the sample interval allows
+it; NVDEC via ffmpeg is available but opt-in, because on a consumer card
+it measured no faster than the CPU. The manifest records which decoder
+produced the frames.
 
 Performance note (from testing on a Raspberry Pi 5): YOLO11n took ~400ms per
 inference in PyTorch but ~80ms exported to NCNN. Model format matters more
@@ -72,9 +74,12 @@ THUMB_MAX_W = 640
 # How frames are pulled off disk. Decode, not inference, is where a GPU node
 # spends its time (see the timing block in any manifest), so this is the
 # knob that matters once the model is fast:
-#   auto   - NVDEC through ffmpeg if the card and ffmpeg both support it,
-#            else ffmpeg on the CPU, else OpenCV. The safe default.
-#   nvdec  - require hardware decode; fail the file if it is unavailable.
+#   auto   - keyframe-only decode when the interval allows it, else ffmpeg
+#            on the CPU, else OpenCV. NVDEC is NOT chosen automatically:
+#            measured on an RTX 3070 with 1440p H.264, one consumer NVDEC
+#            shared by four workers was no faster than four CPU cores.
+#   nvdec  - use hardware decode (for cameras opted into sub-GOP sampling
+#            on a node where it measures faster); fail if unavailable.
 #   ffmpeg - ffmpeg software decode (frame sampling happens inside ffmpeg,
 #            and decode runs in its own process alongside inference).
 #   cv2    - the original OpenCV grab/retrieve loop.
@@ -459,42 +464,21 @@ def open_source(path: Path, interval: float):
             return FfmpegSource(path, interval, hw=False, keyframes=True), interval
     if DECODE == "ffmpeg":
         return FfmpegSource(path, interval, hw=False), interval
-    # nvdec or auto: is the hardware path there at all?
-    hw_ok = bool(os.path.exists("/dev/nvidiactl")) and any(
-        d.endswith("_cuvid") for d in _ffmpeg_decoders())
     if DECODE == "nvdec":
+        hw_ok = bool(os.path.exists("/dev/nvidiactl")) and any(
+            d.endswith("_cuvid") for d in _ffmpeg_decoders())
         if not hw_ok:
             raise RuntimeError("DECODE=nvdec but no NVIDIA device or ffmpeg "
                                "lacks *_cuvid decoders (apt install ffmpeg "
                                "libnvcuvid1)")
         return FfmpegSource(path, interval, hw=True), interval
-    # auto
-    if hw_ok:
-        try:
-            src = FfmpegSource(path, interval, hw=True)
-            # Probe: fail fast if the decoder cannot start, rather than
-            # discovering it after the model has loaded. Pull one frame.
-            it = src.frames()
-            first = next(it, None)
-            if first is None:
-                raise RuntimeError("nvdec yielded no frames")
-            src._prefetched = (first, it)
-            return src, interval
-        except Exception as e:  # noqa: BLE001
-            print(f"WARNING: NVDEC unavailable ({str(e)[:200]}); "
-                  f"falling back to ffmpeg software decode", file=sys.stderr)
+    # auto: NVDEC only on request. Kept as an opt-in because a consumer
+    # card's single decoder measured slower than the CPU cores it freed.
     return FfmpegSource(path, interval, hw=False), interval
 
 
 def iter_frames(src):
-    """Yield from a source, honouring a frame open_source() already pulled."""
-    pre = getattr(src, "_prefetched", None)
-    if pre:
-        first, it = pre
-        yield first
-        yield from it
-    else:
-        yield from src.frames()
+    yield from src.frames()
 
 
 class Detector:

@@ -116,7 +116,7 @@ install-deps:
 	@echo "==> apt packages"
 	sudo apt-get install -y python3-venv parallel ffmpeg
 ifeq ($(GPU),1)
-	@echo "==> libnvcuvid1 (NVDEC userspace library, non-free)"
+	@echo "==> libnvcuvid1 (NVDEC userspace library, non-free; only used with DECODE=nvdec)"
 	sudo apt-get install -y libnvcuvid1
 endif
 	@echo "==> venv at $(VENV)"
@@ -263,7 +263,7 @@ doctor:
 	    echo "UNAVAILABLE — apt install libnvcuvid1"; \
 	  elif ffmpeg -hide_banner -loglevel error -f lavfi -i testsrc2=size=64x64:rate=5:duration=1 -c:v libx264 -pix_fmt yuv420p -f mp4 -y /tmp/.nvdec-probe.mp4 2>/dev/null \
 	       && ffmpeg -hide_banner -loglevel error -c:v h264_cuvid -i /tmp/.nvdec-probe.mp4 -f null - 2>/dev/null; then \
-	    rm -f /tmp/.nvdec-probe.mp4; echo "ok  (h264_cuvid decoded a test clip; DECODE=auto will use it)"; \
+	    rm -f /tmp/.nvdec-probe.mp4; echo "ok  (h264_cuvid decoded a test clip; available with DECODE=nvdec)"; \
 	  else rm -f /tmp/.nvdec-probe.mp4; echo "FAILED — h264_cuvid present but could not decode (driver/libnvcuvid mismatch?)"; fi
 	@printf "%-22s" "keyframes:"; \
 	  f=$$(find $(RECORDINGS) -maxdepth 1 -name '*.mp4' -mmin +2 2>/dev/null | head -1); \
