@@ -346,36 +346,33 @@ Notes:
   decoder that honours the flag. There is no configuration in which
   hardware decode wins on this hardware.
 
-### Decode resolution
+### Decode resolution (measured: leave it off)
 
-The second half of decode cost is not the decode: it is converting each
-frame to BGR24 and pushing ~11 MB through a pipe, at a resolution nothing
-downstream uses. The model runs at 640×640 and the motion gate at 480
-wide, so a 2560×1440 frame is carried at full size only to be shrunk
-twice.
+Nothing downstream needs full resolution — the model runs at 640×640 and
+the motion gate at 480 wide — so scaling inside ffmpeg, before the colour
+conversion, looks like an easy saving. Standalone, it is: decode-and-write
+of a 60 s 1440p clip went from 6.47 s to 1.33 s at 1280 wide.
 
-`DECODE_MAX_W` (default 1280) scales inside ffmpeg, before the colour
-conversion. Measured on a 60 s 1440p clip, decode-and-convert:
+Inside the worker it is a regression. On the GPU node with six workers,
+862 files at source resolution averaged 9.7 s against 200 files at 1280
+averaging 11.7 s. The standalone test wrote 1.6 GB of raw frames as fast
+as the pipe would take them, and scaling removed most of that write. The
+worker consumes frames one at a time as the Python side is ready, so the
+pipe is never the constraint, the transfer saving never materialises, and
+the swscale pass is pure added cost.
 
-```
-2560 wide (source)   6.47 s
-1280 wide            1.33 s
- 960 wide            0.96 s
-```
+`DECODE_MAX_W` therefore defaults to 0 (source resolution). It is kept as
+an option because a slower node may balance differently — a Pi decoding
+1440p is slow enough per frame that the pipe could be the constraint
+there. `bench` groups as `decoder@width`, so trying it is one cron tick
+and the comparison reads off the table. Boxes are scaled back to the
+recording's own coordinates before the manifest either way, so detections
+stay comparable; `timing.decode_width` records what was decoded.
 
-Boxes are scaled back to the recording's own coordinates before they
-reach the manifest, so detections stay comparable across nodes and
-settings; `timing.decode_width` records what was actually decoded.
-Thumbnails are annotated and cropped from the scaled frame — they are
-640 wide in the contact sheet regardless, so there is nothing to lose
-until `DECODE_MAX_W` drops below that.
-
-Set `DECODE_MAX_W=0` to decode at source resolution. The floor worth
-using is around 960: below that, small or distant objects start to fall
-under the model's effective resolution and detections are lost, which
-`bench` cannot see and only a `--force` re-run of a known-busy camera
-will reveal. `cv2` ignores this setting — OpenCV decodes at source
-resolution and scaling afterwards saves nothing.
+Note that at 1280 the same test file produced 16 tracks against 17 at
+source, so scaling is not perfectly neutral for detection either.
+`cv2` ignores this setting — OpenCV decodes at source resolution and
+scaling afterwards saves nothing.
 
 
 ## 2b. Per-camera detection rules (cameras.json)

@@ -59,7 +59,8 @@ DECODE      ?=
 # worker defaults. See README "Sampling density and decode cost".
 DECODE_KEYFRAMES ?=
 # DECODE_MAX_W: decode frames no wider than this (0 = source). Empty =
-# worker default (1280). See README "Decode resolution".
+# worker default (0, off - measured a regression on a GPU node; see
+# README "Decode resolution").
 DECODE_MAX_W ?=
 INTERVAL_SCALE ?=
 # ACCEL picks the CPU export format: openvino (Intel) or ncnn (ARM).

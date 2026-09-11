@@ -98,15 +98,19 @@ DECODE_THREADS = int(os.environ.get("DECODE_THREADS", "1"))
 KEYFRAMES = os.environ.get("DECODE_KEYFRAMES", "auto").lower()
 KEYFRAME_MIN_RATIO = 0.9
 GOP_PROBE_SEC = 20
-# Decode frames no wider than this (0 = source resolution). Nothing
-# downstream needs full resolution - the model runs at 640x640 and the
-# motion gate at 480 wide - but a 1440p frame still costs a BGR24
-# conversion and ~11 MB through the pipe. Scaling inside ffmpeg cut
-# decode+convert from 6.5s to 1.3s per 60s 1440p clip. Boxes are scaled
-# back to source coordinates before they reach the manifest, so numbers
-# stay comparable across nodes; thumbnails are cropped from the scaled
-# frame and so are lower resolution (they are 640 wide anyway).
-DECODE_MAX_W = int(os.environ.get("DECODE_MAX_W", "1280"))
+# Decode frames no wider than this (0 = source resolution, the default).
+# The idea: nothing downstream needs full resolution - the model runs at
+# 640x640 and the motion gate at 480 wide - so scaling inside ffmpeg
+# should save the BGR24 conversion and ~11 MB per frame through the pipe.
+# Measured a 5x saving in standalone ffmpeg runs, but NOT in the worker:
+# 862 files at source resolution averaged 9.7s against 200 files at 1280
+# averaging 11.7s, a 17% regression. Frames are consumed one at a time as
+# the Python side is ready, so the pipe is never the constraint and the
+# swscale pass is pure added cost. Left as an option because a slower
+# node (a Pi decoding 1440p) may balance differently; bench's
+# decoder@width column makes it a one-tick experiment. Boxes are scaled
+# back to source coordinates before the manifest either way.
+DECODE_MAX_W = int(os.environ.get("DECODE_MAX_W", "0"))
 # Denser sampling on GPU nodes. With inference at ~10 ms, sampling more
 # often costs only the motion gate - but an interval below the camera's
 # keyframe spacing gives up keyframe-only decode (below), which is a much
