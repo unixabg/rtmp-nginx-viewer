@@ -346,33 +346,36 @@ Notes:
   decoder that honours the flag. There is no configuration in which
   hardware decode wins on this hardware.
 
-### Decode resolution (measured: leave it off)
+### Decode resolution
 
-Nothing downstream needs full resolution — the model runs at 640×640 and
-the motion gate at 480 wide — so scaling inside ffmpeg, before the colour
-conversion, looks like an easy saving. Standalone, it is: decode-and-write
-of a 60 s 1440p clip went from 6.47 s to 1.33 s at 1280 wide.
+The second half of decode cost is not the decode: it is converting each
+frame to BGR24 and pushing ~11 MB through a pipe, at a resolution nothing
+downstream uses. The model runs at 640×640 and the motion gate at 480
+wide, so a 2560×1440 frame is carried at full size only to be shrunk
+twice.
 
-Inside the worker it is a regression. On the GPU node with six workers,
-862 files at source resolution averaged 9.7 s against 200 files at 1280
-averaging 11.7 s. The standalone test wrote 1.6 GB of raw frames as fast
-as the pipe would take them, and scaling removed most of that write. The
-worker consumes frames one at a time as the Python side is ready, so the
-pipe is never the constraint, the transfer saving never materialises, and
-the swscale pass is pure added cost.
+`DECODE_MAX_W` (default 1280) scales inside ffmpeg, before the colour
+conversion. Measured on a 60 s 1440p clip, decode-and-convert:
 
-`DECODE_MAX_W` therefore defaults to 0 (source resolution). It is kept as
-an option because a slower node may balance differently — a Pi decoding
-1440p is slow enough per frame that the pipe could be the constraint
-there. `bench` groups as `decoder@width`, so trying it is one cron tick
-and the comparison reads off the table. Boxes are scaled back to the
-recording's own coordinates before the manifest either way, so detections
-stay comparable; `timing.decode_width` records what was decoded.
+```
+2560 wide (source)   6.47 s
+1280 wide            1.33 s
+ 960 wide            0.96 s
+```
 
-Note that at 1280 the same test file produced 16 tracks against 17 at
-source, so scaling is not perfectly neutral for detection either.
-`cv2` ignores this setting — OpenCV decodes at source resolution and
-scaling afterwards saves nothing.
+Boxes are scaled back to the recording's own coordinates before they
+reach the manifest, so detections stay comparable across nodes and
+settings; `timing.decode_width` records what was actually decoded.
+Thumbnails are annotated and cropped from the scaled frame — they are
+640 wide in the contact sheet regardless, so there is nothing to lose
+until `DECODE_MAX_W` drops below that.
+
+Set `DECODE_MAX_W=0` to decode at source resolution. The floor worth
+using is around 960: below that, small or distant objects start to fall
+under the model's effective resolution and detections are lost, which
+`bench` cannot see and only a `--force` re-run of a known-busy camera
+will reveal. `cv2` ignores this setting — OpenCV decodes at source
+resolution and scaling afterwards saves nothing.
 
 
 ## 2b. Per-camera detection rules (cameras.json)
@@ -416,6 +419,8 @@ Per-rule keys (only `classes` is required; the rest inherit from `default`):
 | `min_area` | motion-gate px²; raise for cameras with trees/rain/traffic |
 | `interval` | seconds between sampled frames; lower for doors and driveways |
 | `gpu_interval` | interval used instead on a node with a CUDA GPU; opts this camera into dense sampling at the cost of a full decode (see below) |
+| `stationary_frac` | how far an object may travel and still count as parked, as a fraction of its box size (default 0.25) |
+| `stationary_growth` | how much its box may change size and still count as parked (default 0.35) |
 | `keepalive` | seconds between forced looks in a still scene (default 30, 0 = off) |
 
 Useful COCO classes: `person`, `bicycle`, `car`, `motorcycle`, `bus`,
@@ -685,15 +690,46 @@ anyway, so persistent objects accumulate sightings and get classified
 correctly. Cost is bounded at video-length ÷ keepalive extra inferences —
 ten per 5-minute recording at the default.
 
-**`stationary`** separates a car driving past from a car sitting in the lot:
-it's true when the 80th-percentile distance from the track's median position
-stays under a quarter of the box's own size. Percentile and median rather
-than maximum and first sighting: a detector will occasionally return one
-shifted or resized box for a perfectly still object, and a max-based test
-lets that single frame flip the whole track to "moving". Normalizing by box size is what lets
-one threshold work for both a car filling the frame and a person far down a
-driveway. Filter these out for "what happened" browsing, or keep them for
-"what's been sitting there for three hours".
+**`stationary`** separates a car driving past from a car sitting in the lot.
+Two things have to be true: the object never travelled across the frame
+(`travel`, centre displacement as a fraction of box size) and it never
+changed distance from the camera (`growth`, fractional change in box
+diagonal). Growth matters because a car that pulls straight into a garage
+barely moves its centre — measured at 0.10 of its own diagonal, well under
+the 0.25 threshold — while its box grows by 70%. A centre-only test is
+nearly blind to motion along the camera axis.
+
+Both are measured as the track's **first and last windows against its
+typical position**, not as spread around an average. Averaging fails on
+long tracks: a car that arrives over 20 s and then sits for 280 s has 93%
+of its sightings in one spot, so any mean, median or percentile over the
+whole track calls it parked. A track exists only while its object is
+detected, so an arrival is always at the start and a departure at the end —
+comparing just those two ends against the middle finds them, while giving
+detector noise only two chances to mislead instead of one per pair of
+sightings.
+
+Robustness comes from medians at two levels: sightings are grouped into
+windows of three and each window reduced to its median, then the window
+sequence is median-filtered across neighbours. That erases the isolated
+wildly-placed box a detector returns every few percent of frames (the
+observed ones are displaced by 60–80% of the box diagonal) while keeping a
+sustained arrival, because the difference between noise and movement is
+persistence rather than size. In simulation against a noise model matched
+to real night footage, parked objects are misclassified as moving under 1%
+of the time for tracks of 30+ sightings and about 2% at 11. Tracks of
+exactly three sightings are the weak spot at roughly 20%: there is no way
+to outvote a bad box in three samples without also erasing the only
+movement there is.
+
+`travel`, `growth`, `diag_first`, `diag_last` and `windows` are all in the
+manifest's `motion` block, so a disputed classification can be read rather
+than guessed. Both thresholds can be overridden per camera with
+`stationary_frac` and `stationary_growth`, and the effective values are
+recorded in the manifest's `worker` block — but they are normalized by box
+size precisely so that one setting should hold across cameras at different
+distances, so read the numbers before reaching for the override. Filter stationary tracks out for "what happened" browsing, or
+keep them for "what's been sitting there for three hours".
 
 How association works: each detection is matched to an existing track of the
 same label if the boxes overlap (IoU ≥ `TRACK_IOU`) **or** the detection

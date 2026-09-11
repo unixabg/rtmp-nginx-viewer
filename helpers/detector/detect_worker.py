@@ -140,9 +140,39 @@ KEEPALIVE_SEC = 30.0
 # Fall back to a centre-distance gate, measured against the position
 # PREDICTED from the track's recent velocity, in units of box diagonal.
 TRACK_MAX_MOVE = 1.2
-# "Stationary" = the box centre never moved more than this fraction of the
-# box's own size over the track's life. Parked cars, furniture, etc.
-STATIONARY_FRAC = 0.25
+# "Stationary" = the object neither travelled across the frame nor towards
+# or away from the camera, over the track's life. Parked cars, furniture.
+#
+# Two independent tests, because either alone has a blind spot:
+#   travel - how far the box centre moved, as a fraction of box size.
+#   growth - how much the box diagonal changed, as a ratio.
+# A car driving straight at the camera parks itself with barely any centre
+# movement (measured: 0.21 of its own diagonal) while its box grows 67%;
+# a car crossing the frame moves its centre without changing size much.
+# Both are movement. A genuinely parked car does neither.
+STATIONARY_FRAC = 0.25   # travel threshold, fractions of box diagonal
+STATIONARY_GROWTH = 0.35  # growth threshold, e.g. 0.35 = 35% bigger/smaller
+# Both tests ask whether the object ever occupied a materially different
+# position or distance - the largest difference between any two points of
+# its life, not the spread around its average. Averaging fails on long
+# tracks: a car that arrives over 20s and then sits for 280s has 93% of its
+# sightings in one spot, so any mean, median or percentile calls it parked.
+# So is comparing the track's first sightings against its last, if the
+# window is a fraction of the track: 15% of 151 sightings is 23, which
+# already includes the parked ones.
+#
+# Instead the track is cut into small fixed-size windows, each summarised
+# by its median, and the largest difference between windows is what counts.
+# The window is small enough that a brief arrival is its own window, and
+# big enough that one badly-placed or badly-sized box (detectors return
+# them, especially at night) is outvoted inside it.
+STATIONARY_WINDOW = 3     # sightings per window, once a track is long enough
+STATIONARY_WINDOW_MIN = 6  # below this many sightings, compare them directly
+# Known limit: a track of exactly three sightings cannot be both robust and
+# sensitive - there is no way to outvote a wild box without also erasing the
+# only movement there is. Those are called moving when one sighting is bad
+# (~20% of the time at a 9% wild-box rate, in simulation). Tracks that short
+# are usually transient anyway, and the cost is one extra thumbnail.
 
 # Installed version, written by `make install`/`upgrade` from git describe.
 # Stamped into every manifest so a support question can start from "what
@@ -696,6 +726,99 @@ class Tracker:
         return sorted(self.closed, key=lambda tr: (tr["first_seen"], tr["id"]))
 
 
+def _windows(tr):
+    """The track as a list of (centre, diagonal) medians over small windows.
+
+    Short tracks are returned sighting by sighting: with fewer than
+    STATIONARY_WINDOW_MIN sightings there is nothing to outvote a bad box
+    anyway, and windowing would hide the only movement there is.
+    """
+    cs, dg = tr["centres"], tr["diags"]
+    n = len(cs)
+    if n < STATIONARY_WINDOW_MIN:
+        return list(zip(cs, dg))
+    k = STATIONARY_WINDOW
+    # Every window must hold a full k sightings, or a single wild box can
+    # carry it: a median over two is their mean, which keeps half the
+    # error. The remainder goes into the last window rather than forming a
+    # short one of its own.
+    nwin = max(1, n // k)
+    out = []
+    for w in range(nwin):
+        i = w * k
+        j = n if w == nwin - 1 else i + k
+        sl_c, sl_d = cs[i:j], dg[i:j]
+        out.append(((_median([c[0] for c in sl_c]),
+                     _median([c[1] for c in sl_c])), _median(sl_d)))
+    return out
+
+
+def _smooth(w, span=3):
+    """Median-filter a window sequence over `span` consecutive windows.
+
+    Windowing alone is not enough. Detectors emit isolated wild boxes at a
+    few percent of sightings, and a long track has many windows, so taking
+    the largest difference between any two of them finds the worst noise
+    rather than the object's movement (measured: 248 of 300 synthetic
+    parked cars misclassified at a 10% bad-box rate).
+
+    What separates noise from movement is not size but persistence: a bad
+    box is isolated, an arrival is a run of consecutive sightings that are
+    all different from what follows. A median over neighbouring windows
+    erases the first and keeps the second.
+    """
+    # With only a few windows a median filter collapses the whole sequence
+    # towards its middle - on three windows every output becomes the track
+    # median, erasing exactly the difference this is meant to measure. Short
+    # tracks rely on the window medians alone for robustness.
+    if len(w) < span + 2:
+        return w
+    out = []
+    for i in range(len(w)):
+        # At the ends, take a one-sided slice of the full span rather than
+        # a truncated centred one: a median over two is their mean, which
+        # keeps half of a wild box's error - and the ends are exactly where
+        # this is read, so they are the worst place to be weakest.
+        if i == 0:
+            sl = w[:span]
+        elif i == len(w) - 1:
+            sl = w[-span:]
+        else:
+            sl = w[max(0, i - span // 2): i + span // 2 + 1]
+        out.append(((_median([c[0][0] for c in sl]),
+                     _median([c[0][1] for c in sl])),
+                    _median([c[1] for c in sl])))
+    return out
+
+
+def _travel_growth(tr):
+    """(travel, growth): the largest difference between any two windows.
+
+    travel is centre displacement in units of the larger window's diagonal,
+    so one threshold serves a car filling the frame and a person far down a
+    driveway. growth is the fractional difference in diagonal, measured
+    against the smaller, so approach and retreat score the same.
+    """
+    w = _smooth(_windows(tr))
+    # Compare only the track's first and last window against its typical
+    # position and size - two comparisons, not every pair. A track exists
+    # only while its object is detected, so an arrival is always at the
+    # start and a departure always at the end; nothing is lost. Comparing
+    # every pair instead gives detector noise a chance to trip on each of
+    # them (1,225 chances on a 151-sighting track), which is how parked
+    # cars got called moving.
+    mx = _median([c[0][0] for c in w])
+    my = _median([c[0][1] for c in w])
+    md = _median([c[1] for c in w]) or 1.0
+    travel = growth = 0.0
+    for (cx, cy), d in (w[0], w[-1]):
+        ref = max(d, md) or 1.0
+        travel = max(travel, (((cx - mx) ** 2 + (cy - my) ** 2) ** 0.5) / ref)
+        lo, hi = min(d, md), max(d, md)
+        growth = max(growth, (hi - lo) / (lo or 1.0))
+    return travel, growth
+
+
 def stationary_stats(tr):
     """Numbers behind the stationary decision, kept in the manifest.
 
@@ -710,40 +833,59 @@ def stationary_stats(tr):
     d = sorted((((cx - mx) ** 2 + (cy - my) ** 2) ** 0.5) / ref for cx, cy in cs)
     n = len(d)
     pick = lambda p: d[max(0, min(n - 1, int(round(p * (n - 1)))))]
-    return {"move_p50": round(pick(0.5), 3),
-            "move_p80": round(pick(0.8), 3),
-            "move_max": round(d[-1], 3),
-            "outliers": sum(1 for x in d if x >= STATIONARY_FRAC),
-            "sightings": n}
+    stats = {"move_p50": round(pick(0.5), 3),
+             "move_p80": round(pick(0.8), 3),
+             "move_max": round(d[-1], 3),
+             # Against the module default, not any per-camera override:
+             # this is a diagnostic, and a fixed yardstick makes cameras
+             # comparable. The decision itself uses the effective values.
+             "outliers": sum(1 for x in d if x >= STATIONARY_FRAC),
+             "sightings": n}
+    if n >= 2:
+        travel, growth = _travel_growth(tr)
+        w = _smooth(_windows(tr))
+        # The two numbers the stationary decision is actually made on, plus
+        # the first and last window diagonals for scale, so a
+        # misclassification can be read out of the manifest not guessed at.
+        stats.update({"travel": round(travel, 3),
+                      "growth": round(growth, 3),
+                      "diag_first": round(w[0][1], 1),
+                      "diag_last": round(w[-1][1], 1),
+                      "windows": len(w)})
+    return stats
 
 
-def is_stationary(tr, frac=STATIONARY_FRAC):
-    """True if the box stayed put, judged robustly.
+def is_stationary(tr, frac=STATIONARY_FRAC, growth_frac=STATIONARY_GROWTH):
+    """True if the object neither travelled nor changed distance.
 
-    Measures each sighting's distance from the track's MEDIAN centre, not
-    its first (which may itself be a bad frame), and asks whether the 80th
-    percentile is small — not the maximum. A detector will occasionally
-    return one shifted or resized box for a perfectly stationary object;
-    with a max-based test that single frame flips the whole track to
-    "moving", which is exactly what happened to parked cars in a garage.
+    Asks for the largest difference between any two points of the track's
+    life, rather than the spread around its average. An earlier version
+    took the 80th percentile of each sighting's distance from the track's
+    median centre; that is robust against the odd badly-placed box, but it
+    is a vote over the whole track, so a car that arrives in the first 20
+    seconds and then sits for 280 more is outvoted by its own parked
+    sightings and called stationary.
 
-    Distances are normalized by the median box diagonal, so one threshold
-    serves both a car filling the frame and a person far down a driveway.
+    Robustness is kept by cutting the track into small windows and taking
+    each window's MEDIAN, so a single bad box cannot flip the result, while
+    the window stays short enough that a brief arrival is not averaged into
+    the park that follows it.
+
+    Two conditions, both of which a parked object satisfies:
+      travel - the centre is within `frac` of the box diagonal, and
+      growth - the box is within `growth_frac` of the size it started.
+    Growth catches motion along the camera axis, which a centre-only test
+    is nearly blind to: a car driving straight at the lens moves its centre
+    very little while its box grows by half or more.
+
+    Returns None when the track has fewer than two sightings: one position
+    is no evidence either way, and calling that "moving" put every marginal
+    single-frame detection on the viewer as an event.
     """
-    cs = tr["centres"]
-    if len(cs) < 2:
-        # One position is no evidence either way. Returning False here used
-        # to mean "moving", which put every marginal single-frame detection
-        # on the viewer as an event - and the parked/static filter could
-        # not reach it, because nothing had been judged. Say so instead.
+    if len(tr["centres"]) < 2:
         return None
-    ref = _median(tr["diags"])
-    mx = _median([c[0] for c in cs])
-    my = _median([c[1] for c in cs])
-    dists = sorted(((cx - mx) ** 2 + (cy - my) ** 2) ** 0.5 for cx, cy in cs)
-    # 80th percentile: tolerate up to a fifth of sightings being outliers.
-    idx = max(0, int(round(0.8 * (len(dists) - 1))))
-    return (dists[idx] / ref) < frac
+    travel, growth = _travel_growth(tr)
+    return travel < frac and growth < growth_frac
 
 
 def _median(vals):
@@ -813,6 +955,12 @@ def process(input_path: Path, input_root: Path, output_root: Path,
     min_area = int(rule.get("min_area", MOTION_MIN_AREA))
     interval, interval_how = effective_interval(rule, cfg)
     keepalive = float(rule.get("keepalive", KEEPALIVE_SEC))
+    # Per-camera stationary thresholds. Both are normalized by box size, so
+    # the defaults are meant to hold across cameras at different distances -
+    # override only when a particular view proves otherwise, and check the
+    # travel/growth numbers in the motion block before doing so.
+    stat_frac = float(rule.get("stationary_frac", STATIONARY_FRAC))
+    stat_growth = float(rule.get("stationary_growth", STATIONARY_GROWTH))
 
     # An empty class list means "don't analyze this camera at all". Write a
     # manifest anyway so the file counts as done and isn't retried forever.
@@ -907,7 +1055,7 @@ def process(input_path: Path, input_root: Path, output_root: Path,
     raw = tracker.finish()
     tracks = []
     for tr in raw:
-        stationary = is_stationary(tr)
+        stationary = is_stationary(tr, stat_frac, stat_growth)
         entry = {
             "id": tr["id"],
             "label": tr["label"],
@@ -995,7 +1143,10 @@ def process(input_path: Path, input_root: Path, output_root: Path,
                    "conf_threshold": conf,
                    "min_area": min_area,
                    "track_iou": TRACK_IOU,
-                   "stationary_frac": STATIONARY_FRAC},
+                   # Effective values, not the module defaults: a rule may
+                   # have overridden them for this camera.
+                   "stationary_frac": stat_frac,
+                   "stationary_growth": stat_growth},
     }
 
     # Write atomically so the viewer never reads a half-written manifest.
