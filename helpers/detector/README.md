@@ -45,6 +45,7 @@ Detection box (defaults assume the NFS layout) versus viewer/NVR box
 make install                                   # detection box
 make install PROFILE=viewer                    # viewer box
 make install GPU=1                             # CUDA wheels instead of CPU
+make install GPU=1 CUDA_INDEX=https://download.pytorch.org/whl/cu130   # CUDA 13 driver
 ```
 
 Running:
@@ -66,7 +67,7 @@ make purge         # also deletes the detections tree (prompts first)
 ```
 
 Useful variables: `PREFIX` (default `/opt/detection`), `RECORDINGS`,
-`DETECTIONS`, `JOBS`, `GPU`, `ACCEL`, `DETECT_MODEL`, `NICE`. `make install`
+`DETECTIONS`, `JOBS`, `GPU`, `CUDA_INDEX`, `ACCEL`, `DETECT_MODEL`, `NICE`. `make install`
 never overwrites an existing `cameras.json`, and `make upgrade` refreshes
 scripts and Python packages while leaving your config and detections alone.
 
@@ -140,13 +141,48 @@ sudo rm -rf /var/tmp/pip
 > — and fails with `OSError: [Errno 28] No space left on device` even when
 > the disk has plenty of room. `/var/tmp` is on disk by convention.
 
-**NVIDIA node instead?** Replace the two `pip install` lines with one
-(keeping the TMPDIR), which pulls the default CUDA-enabled wheels (~2.5 GB):
+**NVIDIA node instead?** Keep both `pip install` lines but point the
+torch one at a CUDA wheel index that matches your driver (~2.5 GB):
 
 ```
 sudo TMPDIR=/var/tmp/pip /opt/detection/venv/bin/pip install --no-cache-dir \
+    torch torchvision --index-url https://download.pytorch.org/whl/cu126
+sudo TMPDIR=/var/tmp/pip /opt/detection/venv/bin/pip install --no-cache-dir \
     ultralytics opencv-python-headless
 ```
+
+> **Why pin the index:** a bare `pip install torch` now gives you a CUDA 13
+> build, which needs a CUDA 13 driver (roughly 580 and up). Debian stable
+> ships the 550 driver (CUDA 12.4) and that build will not load on it —
+> `torch.cuda.is_available()` just returns `False` with no useful error,
+> after a 2.5 GB download. The `cu126` wheels run on any CUDA 12.x driver, so
+> they are the default (`CUDA_INDEX` in the Makefile). Check what you have
+> with `nvidia-smi`: the "CUDA Version" in the header is the ceiling for the
+> torch build. 12.x → `cu126`; 13.x → `cu130`. `make doctor` prints the
+> driver, the CUDA build torch was compiled against, and whether they agree.
+
+Installing torch first also means the later `ultralytics` install leaves it
+alone — pip only replaces a dependency when the one present does not satisfy
+the requirement. `make upgrade` re-pins the same index for the same reason.
+
+**Driver notes for Debian.** `nvidia-driver` lives in `non-free`, which the
+installer does not enable — add `contrib non-free` to the `deb` lines in
+`/etc/apt/sources.list` (or the `Components:` lines in
+`/etc/apt/sources.list.d/*.sources`) and `apt update`. Then:
+
+```
+sudo apt install linux-headers-amd64 nvidia-driver firmware-misc-nonfree \
+    nvidia-smi libcuda1
+```
+
+On a headless box `--no-install-recommends` on `nvidia-driver` keeps Xorg
+out, but then `nvidia-smi` and `libcuda1` must be named explicitly as above
+— without `libcuda1`, `nvidia-smi` shows `CUDA Version: N/A` and torch can
+never see the card. Make sure the running kernel is the newest installed one
+(`uname -r` vs `apt list --installed 'linux-image-*'`) before installing, or
+DKMS builds the module for a kernel you are not booted into. Check
+`dkms status` says `installed` before rebooting. No CUDA toolkit is needed
+from apt or NVIDIA: the torch wheels bundle their own runtime and cuDNN.
 
 No `source .../activate` is ever needed: `run_detection.sh` automatically
 uses `/opt/detection/venv/bin/python3` when it exists (falling back to
@@ -167,8 +203,12 @@ Per-node choices that follow from this:
   wheels. Do the export below (NCNN for ARM, OpenVINO for Intel); it's the big CPU speedup.
 * **NVIDIA node:** use the CUDA install variant above and **skip the NCNN
   export** — NCNN inference is CPU-only, so pointing `DETECT_MODEL` at it
-  would leave the GPU idle. Keep the default `.pt` model. Verify with:
-  `/opt/detection/venv/bin/python3 -c "import torch; print(torch.cuda.is_available())"`
+  would leave the GPU idle. Keep the default `.pt` model. Verify with
+  `make doctor` (the `nvidia driver:` and `torch:` lines) or directly:
+  `/opt/detection/venv/bin/python3 -c "import torch; print(torch.__version__, torch.cuda.is_available())"`
+  — expect a `+cu126`-style version and `True`. A `+cu130` version with
+  `False` means the torch build is newer than the driver; reinstall with
+  the `cu126` index.
 
 Since `DETECT_MODEL` is an environment variable set per node, GPU nodes run
 the `.pt` while CPU nodes run their exported format, side by side in one cluster.

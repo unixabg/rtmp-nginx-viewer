@@ -43,6 +43,13 @@ MANIFEST_DAYS ?= 90
 # line — make would include the trailing spaces in the value.
 PRUNE_AT      ?= 30 2
 GPU         ?= 0
+# CUDA_INDEX is the PyTorch wheel index used when GPU=1. PyPI's default
+# torch is now a CUDA 13 build, which needs a CUDA 13 driver (~580+);
+# Debian stable ships 550 (CUDA 12.4), which cannot load it. cu126 works on
+# any CUDA 12.x driver, so it is the safe default for Debian. On a newer
+# driver, pass CUDA_INDEX=https://download.pytorch.org/whl/cu130. Match it
+# to the "CUDA Version" that nvidia-smi prints.
+CUDA_INDEX  ?= https://download.pytorch.org/whl/cu126
 # ACCEL picks the CPU export format: openvino (Intel) or ncnn (ARM).
 ACCEL       ?= openvino
 MODEL       ?= yolo11n.pt
@@ -80,6 +87,7 @@ help:
 	@echo "current settings (override on the command line):"
 	@printf "  %-14s %s\n" PREFIX $(PREFIX) RECORDINGS $(RECORDINGS) \
 	    DETECTIONS $(DETECTIONS) JOBS $(JOBS) GPU $(GPU) ACCEL $(ACCEL) \
+	    CUDA_INDEX $(CUDA_INDEX) \
 	    THUMB_DAYS $(THUMB_DAYS) MANIFEST_DAYS $(MANIFEST_DAYS)
 	@echo
 	@echo "  tip: PROFILE=viewer switches to /videos paths"
@@ -99,7 +107,9 @@ install-deps:
 	sudo mkdir -p $(PREFIX) $(DETECTIONS) $(TMPDIR_PIP)
 	[ -x $(PY) ] || sudo python3 -m venv $(VENV)
 ifeq ($(GPU),1)
-	@echo "==> torch with CUDA (GPU=1)"
+	@echo "==> torch with CUDA (GPU=1) from $(CUDA_INDEX)"
+	sudo TMPDIR=$(TMPDIR_PIP) $(PIP) install --no-cache-dir -U \
+	    torch torchvision --index-url $(CUDA_INDEX)
 	sudo TMPDIR=$(TMPDIR_PIP) $(PIP) install --no-cache-dir -U \
 	    ultralytics opencv-python-headless
 else
@@ -176,6 +186,10 @@ upgrade-deps:
 	@echo "==> upgrading Python packages"
 	sudo mkdir -p $(TMPDIR_PIP)
 ifeq ($(GPU),1)
+	@echo "    (GPU=1: keeping torch on $(CUDA_INDEX) so an upgrade can't"
+	@echo "     silently pull a CUDA build the installed driver can't load)"
+	sudo TMPDIR=$(TMPDIR_PIP) $(PIP) install --no-cache-dir -U \
+	    torch torchvision --index-url $(CUDA_INDEX)
 	sudo TMPDIR=$(TMPDIR_PIP) $(PIP) install --no-cache-dir -U \
 	    ultralytics opencv-python-headless
 else
@@ -204,7 +218,21 @@ doctor:
 	  elif $$p -c "import json;json.load(open('$(PREFIX)/$(CONFIG)'))" 2>/dev/null; then \
 	    echo "ok  (valid json, $$($$p -c "import json;print(len(json.load(open('$(PREFIX)/$(CONFIG)')).get('rules',[])))") rule(s))"; \
 	  else echo "INVALID JSON — worker will fall back to defaults"; fi
-	@printf "%-22s" "torch:";            $(PY) -c "import torch;print('ok  ',torch.__version__,'cuda',torch.cuda.is_available())" 2>/dev/null || echo "MISSING"
+	@printf "%-22s" "nvidia driver:"; \
+	  if command -v nvidia-smi >/dev/null; then \
+	    d=$$(nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null | head -1); \
+	    c=$$(nvidia-smi 2>/dev/null | sed -n 's/.*CUDA Version: *\([0-9.N/A]*\).*/\1/p' | head -1); \
+	    if [ -z "$$d" ]; then echo "nvidia-smi present but no GPU answered (module not loaded? nouveau still bound?)"; \
+	    elif [ "$$c" = "N/A" ] || [ -z "$$c" ]; then echo "$$d  CUDA N/A — apt install libcuda1 (torch needs libcuda.so.1)"; \
+	    else m=$${c%%.*}; case $$m in 12) i=cu126;; 13) i=cu130;; *) i=cu$${m}x;; esac; \
+	    echo "$$d  (CUDA $$c) — torch must be a CUDA $$m.x build (CUDA_INDEX=https://download.pytorch.org/whl/$$i)"; fi; \
+	  else echo "none (nvidia-smi not found; fine for a CPU node)"; fi
+	@printf "%-22s" "torch:"; \
+	  $(PY) -c "import torch;print('ok  ',torch.__version__,'built for cuda',torch.version.cuda,'| cuda available',torch.cuda.is_available())" 2>/dev/null || echo "MISSING"
+	@if [ "$(GPU)" = "1" ] && [ -x $(PY) ] && ! $(PY) -c "import torch,sys;sys.exit(0 if torch.cuda.is_available() else 1)" 2>/dev/null; then \
+	    echo "                      ^ GPU=1 but torch can't see the card. Usual causes: torch built for a newer"; \
+	    echo "                        CUDA than the driver (reinstall with CUDA_INDEX=.../cu126), libcuda1 missing,"; \
+	    echo "                        or the nvidia module not loaded (reboot after driver install)."; fi
 	@printf "%-22s" "opencv:";           $(PY) -c "import cv2;print('ok  ',cv2.__version__)" 2>/dev/null || echo "MISSING"
 	@printf "%-22s" "recordings:";       [ -d $(RECORDINGS) ] && \
 	    echo "ok  ($(RECORDINGS), $$(find $(RECORDINGS) -maxdepth 1 -name '*.mp4' 2>/dev/null | wc -l) mp4 at top level)" \
