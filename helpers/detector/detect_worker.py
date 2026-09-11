@@ -85,6 +85,18 @@ TRACK_MAX_MOVE = 1.2
 # box's own size over the track's life. Parked cars, furniture, etc.
 STATIONARY_FRAC = 0.25
 
+# Installed version, written by `make install`/`upgrade` from git describe.
+# Stamped into every manifest so a support question can start from "what
+# were you running" instead of a file diff.
+def _version() -> str:
+    try:
+        return (Path(__file__).resolve().parent / "VERSION").read_text().strip() or "unknown"
+    except OSError:
+        return "unknown"
+
+
+VERSION = _version()
+
 # Per-camera rules file. Defaults to cameras.json next to this script;
 # override with CAMERA_RULES=/path/to/file.json
 RULES_PATH = os.environ.get(
@@ -440,6 +452,7 @@ def process(input_path: Path, input_root: Path, output_root: Path,
             "source": str(input_path.relative_to(input_root)),
             "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
             "skipped": "no classes configured for this camera",
+            "worker": {"version": VERSION},
             "rule": rule.get("note", rule.get("pattern", "default")),
             "labels": [], "event_count": 0, "tracks": []}, indent=1))
         print(f"skip (camera excluded by rule): {input_path.name}")
@@ -596,7 +609,8 @@ def process(input_path: Path, input_root: Path, output_root: Path,
         # Which machine produced this, so timings from a mixed fleet can be
         # told apart after the fact.
         "host": {"name": socket.gethostname(), "model": MODEL_PATH},
-        "worker": {"model": MODEL_PATH,
+        "worker": {"version": VERSION,
+                   "model": MODEL_PATH,
                    "rule": rule.get("note", rule.get("pattern", "default")),
                    "classes": sorted(classes),
                    "frame_interval_sec": interval,
@@ -662,6 +676,7 @@ def record_failure(input_path, input_root, output_root, err: str) -> int:
         "labels": [], "event_count": 0, "moving_count": 0,
         "stationary_count": 0, "tracks": [],
         "host": {"name": socket.gethostname(), "model": MODEL_PATH},
+        "worker": {"version": VERSION, "model": MODEL_PATH},
     }
     tmp = manifest_path.with_suffix(manifest_path.suffix + ".tmp")
     tmp.write_text(json.dumps(manifest, indent=1))

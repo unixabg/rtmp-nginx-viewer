@@ -51,6 +51,10 @@ RUNENV      := RECORDINGS=$(RECORDINGS) DETECTIONS=$(DETECTIONS) \
                JOBLOG=$(JOBLOG) JOBS=$(JOBS) $(if $(DETECT_MODEL),DETECT_MODEL=$(DETECT_MODEL),)
 
 SCRIPTS     := detect_worker.py run_detection.sh prune_detections.sh build_index.py
+# Version is whatever git says about this checkout, stamped into
+# $(PREFIX)/VERSION at install time. Never hand-maintained: a stale number
+# is worse than none. "-dirty" means local uncommitted edits were installed.
+VERSION     := $(shell git describe --tags --always --dirty 2>/dev/null || echo unknown)
 WEBPAGE     := detections.html
 CONFIG      := cameras.json
 
@@ -100,10 +104,11 @@ endif
 
 ## install-scripts: copy worker/runner/pruner into PREFIX
 install-scripts:
-	@echo "==> scripts -> $(PREFIX)"
+	@echo "==> scripts -> $(PREFIX)  (version $(VERSION))"
 	sudo mkdir -p $(PREFIX)
 	sudo cp $(SCRIPTS) $(PREFIX)/
 	sudo chmod +x $(PREFIX)/*.sh
+	@echo "$(VERSION)" | sudo tee $(PREFIX)/VERSION >/dev/null
 
 ## install-config: install cameras.json only if absent (never clobbers yours)
 install-config:
@@ -139,9 +144,10 @@ upgrade: upgrade-scripts upgrade-deps upgrade-web
 
 ## upgrade-scripts: copy newer scripts over the installed ones
 upgrade-scripts:
-	@echo "==> refreshing scripts in $(PREFIX)"
+	@echo "==> refreshing scripts in $(PREFIX)  (version $(VERSION))"
 	sudo cp $(SCRIPTS) $(PREFIX)/
 	sudo chmod +x $(PREFIX)/*.sh
+	@echo "$(VERSION)" | sudo tee $(PREFIX)/VERSION >/dev/null
 	@echo "    cameras.json left as-is; diff it yourself if the format changed:"
 	@diff -q $(CONFIG) $(PREFIX)/$(CONFIG) >/dev/null 2>&1 \
 	    && echo "    (identical)" || echo "    (differs — expected if you customized it)"
@@ -179,6 +185,9 @@ doctor:
 	@printf "%-22s" "python venv:";      [ -x $(PY) ] && echo "ok  ($(PY))" || echo "MISSING — run 'make install'"
 	@printf "%-22s" "gnu parallel:";     command -v parallel >/dev/null && echo "ok" || echo "MISSING — apt install parallel"
 	@printf "%-22s" "scripts:";          [ -x $(RUNNER) ] && echo "ok  ($(PREFIX))" || echo "MISSING — run 'make install-scripts'"
+	@printf "%-22s" "installed version:"; v=$$(cat $(PREFIX)/VERSION 2>/dev/null || echo none); \
+	    if [ "$$v" = "$(VERSION)" ]; then echo "$$v"; \
+	    else echo "$$v  (checkout is $(VERSION) — run 'make upgrade')"; fi
 	@printf "%-22s" "cameras.json:"; \
 	  p=$$([ -x $(PY) ] && echo $(PY) || command -v python3); \
 	  if [ ! -e $(PREFIX)/$(CONFIG) ]; then echo "absent (defaults will be used)"; \
@@ -277,19 +286,19 @@ for m in root.rglob('*.json'):
     t=d.get('timing')
     if not t: old+=1; continue
     h=d.get('host',{})
-    by[(h.get('name','?'), h.get('model','?'))].append(t)
+    by[(h.get('name','?'), h.get('model','?'), d.get('worker',{}).get('version','-'))].append(t)
 if not by:
     print('no timed manifests yet' + (' (%d predate timing; reprocess with --force to measure)'%old if old else '')); raise SystemExit
 def med(v): return round(statistics.median(v),1) if v else None
-print('%-16s %-30s %6s %8s %9s %9s %8s %7s'%('host','model','files','wall_s','xRealtime','infer_ms','warmup_s','decode%'))
-print('-'*104)
-for (host,model),ts in sorted(by.items()):
+print('%-14s %-24s %-14s %5s %7s %9s %8s %7s %7s'%('host','model','version','files','wall_s','xRealtime','infer_ms','warmup','decode%'))
+print('-'*106)
+for (host,model,ver),ts in sorted(by.items()):
     rt=[t['realtime_factor'] for t in ts if t.get('realtime_factor')]
     wall=[t['wall_sec'] for t in ts]
     ips=[t['ms_per_inference'] for t in ts if t.get('ms_per_inference')]
     dec=[100*t['decode_sec']/t['wall_sec'] for t in ts if t.get('wall_sec')]
     wu=[t['warmup_sec'] for t in ts if t.get('warmup_sec')]
-    print('%-16s %-30s %6d %8s %9s %9s %8s %6s%%'%(host[:16], pathlib.Path(model).name[:30],
+    print('%-14s %-24s %-14s %5d %7s %9s %8s %7s %6s%%'%(host[:14], pathlib.Path(model).name[:24], ver[:14],
           len(ts), med(wall), med(rt), med(ips) or '-', med(wu) or '-', med(dec)))
 print()
 allrt=[t['realtime_factor'] for ts in by.values() for t in ts if t.get('realtime_factor')]

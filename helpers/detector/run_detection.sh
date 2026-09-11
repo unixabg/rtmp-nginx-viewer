@@ -102,7 +102,8 @@ mkdir -p "$DETECTIONS"
 # that interactive runs are labelled too, and so cron's % escaping never has
 # to wrap a date command.
 RUN_START=$(date +%s)
-echo "=== run started $(date '+%Y-%m-%d %H:%M:%S') ==="
+VERSION=$(cat "$(dirname "$WORKER")/VERSION" 2>/dev/null || echo unknown)
+echo "=== run started $(date '+%Y-%m-%d %H:%M:%S') | detector $VERSION | host $(hostname) ==="
 
 # Eligible = closed mp4s old enough to be safely readable, newest first so the
 # most recent footage gets detections soonest. The manifest-exists check lives

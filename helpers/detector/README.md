@@ -562,6 +562,26 @@ Notes:
 * Wall-clock times come from the recording's filename plus the track offset,
   so they're real times of day, not offsets into a file.
 
+## Knowing what's running
+
+There is no hand-maintained version number. `make install` and `make
+upgrade` stamp `git describe --tags --always --dirty` into
+`/opt/detection/VERSION`, and from there it flows into:
+
+* every manifest, as `worker.version`
+* every run's start banner in the log: `=== run started ... | detector
+  v1.0-3-gabc123 | host nvr-viewer ===`
+* `make doctor`, which also warns when the installed version differs from
+  the checkout you're standing in
+* `make bench`, as a column, so a fleet comparison shows which code each
+  box ran
+
+`-dirty` means uncommitted local edits were installed. Tag releases
+(`git tag v1.0`) and the number becomes readable on its own; between tags
+it's `v1.0-3-gabc123` — three commits past v1.0 at that hash. When someone
+reports a problem, the first line of their log answers "what are you
+running" without a file diff.
+
 ## Measuring speed across machines
 
 Every manifest records how long the file took and where the time went, which
