@@ -129,6 +129,10 @@
     padding:.1rem .3rem; border:1px solid #ffffff66; color:#fff;
     background:#00000073; border-radius:2px;
   }
+  /* Scroll sentinel: the grid appends another chunk when this comes near
+     the viewport. 1px tall and out of the grid so it never takes a cell. */
+  #more{height:1px}
+  #more[hidden]{display:none}
   .empty{padding:2.5rem 1.2rem; color:var(--dim); max-width:40ch}
   .empty b{display:block; color:var(--ink); font-weight:600; margin-bottom:.35rem}
 
@@ -197,6 +201,7 @@
 <main>
   <nav id="days" aria-label="Days"></nav>
   <div class="sheet" id="sheet"></div>
+  <div id="more" aria-hidden="true"></div>
 </main>
 
 <dialog id="detail">
@@ -222,7 +227,13 @@ const VEHICLES = ["car","truck","bus","motorcycle","bicycle"];
 const family = l => VEHICLES.includes(l) ? "vehicle" : (FAMILY[l] || "other");
 
 const el = id => document.getElementById(id);
-let rows = [], day = null;
+/* A busy day is a couple of thousand tracks, and building that many cells
+   up front costs a visible pause on every filter change - so cells are
+   appended a chunk at a time as you scroll. CHUNK is a compromise: large
+   enough that scrolling never catches up with it, small enough that the
+   first paint is immediate. */
+const CHUNK = 200;
+let rows = [], day = null, view = [], shown = 0;
 
 /* The day rail pins below the sticky header. The header's height depends on
    the site stylesheet's font and padding, so measure rather than hardcode,
@@ -303,31 +314,64 @@ function render(){
         ? `${hidden} parked or static ${hidden === 1 ? "object is" : "objects are"} hidden. Untick the filter to see them.`
         : "Try another camera, object, or day.");
   }
-  const frag = document.createDocumentFragment();
-  for(const r of list){
-    const b = document.createElement("button");
-    b.className = "cell" + (r.still ? " still" : "") + (r.thumb ? "" : " noimg");
-    b.dataset.label = r.label;
-    b.onclick = () => openDetail(r);
-    if(r.thumb){
-      const img = document.createElement("img");
-      img.loading = "lazy"; img.alt = `${r.label} on ${r.camera} at ${r.clock}`;
-      img.src = DET_BASE + r.thumb;
-      img.onerror = () => { b.classList.add("noimg"); img.remove(); };
-      b.appendChild(img);
-    }
-    if(r.still) b.insertAdjacentHTML("beforeend", `<span class="parked">static</span>`);
-    b.insertAdjacentHTML("beforeend",
-      `<span class="stamp"><span class="dot ${family(r.label)}"></span>` +
-      `<span class="time">${r.clock}</span>` +
-      `<span class="cam">${r.camera}</span>` +
-      `<span class="dur">${Math.round(r.dur)}s</span></span>`);
-    frag.appendChild(b);
-  }
-  sheet.appendChild(frag);
+  view = list; shown = 0;
+  el("more").hidden = false;
+  renderChunk();
+  fillViewport();
 }
 
+function cell(r){
+  const b = document.createElement("button");
+  b.className = "cell" + (r.still ? " still" : "") + (r.thumb ? "" : " noimg");
+  b.dataset.label = r.label;
+  b.onclick = () => openDetail(r);
+  if(r.thumb){
+    const img = document.createElement("img");
+    img.loading = "lazy"; img.alt = `${r.label} on ${r.camera} at ${r.clock}`;
+    img.src = DET_BASE + r.thumb;
+    img.onerror = () => { b.classList.add("noimg"); img.remove(); };
+    b.appendChild(img);
+  }
+  if(r.still) b.insertAdjacentHTML("beforeend", `<span class="parked">static</span>`);
+  b.insertAdjacentHTML("beforeend",
+    `<span class="stamp"><span class="dot ${family(r.label)}"></span>` +
+    `<span class="time">${r.clock}</span>` +
+    `<span class="cam">${r.camera}</span>` +
+    `<span class="dur">${Math.round(r.dur)}s</span></span>`);
+  return b;
+}
+
+function renderChunk(){
+  const end = Math.min(shown + CHUNK, view.length);
+  const frag = document.createDocumentFragment();
+  for(let i = shown; i < end; i++) frag.appendChild(cell(view[i]));
+  el("sheet").appendChild(frag);
+  shown = end;
+  if(shown >= view.length) el("more").hidden = true;
+}
+
+/* A chunk may not reach the bottom of a tall window (or the day may have
+   been filtered down to a handful), in which case the sentinel never
+   leaves the viewport and would never fire again. Keep appending until
+   the page is scrollable past it, with a guard so a pathological case
+   cannot spin. */
+function fillViewport(){
+  let guard = 0;
+  while(shown < view.length && guard++ < 50 &&
+        document.documentElement.scrollHeight <= innerHeight + 600)
+    renderChunk();
+}
+
+const moreObserver = new IntersectionObserver(entries => {
+  if(entries.some(e => e.isIntersecting) && shown < view.length){
+    renderChunk();
+    fillViewport();
+  }
+}, {rootMargin: "800px 0px"});
+
 function showEmpty(title, body){
+  view = []; shown = 0;
+  el("more").hidden = true;
   el("sheet").innerHTML = `<div class="empty"><b>${title}</b>${body}</div>`;
 }
 
@@ -366,6 +410,7 @@ function openDetail(r){
 el("close").onclick = () => el("detail").close();
 el("detail").addEventListener("close", () => { el("player").pause(); el("player").src = ""; });
 ["camera","label","hideStill"].forEach(id => el(id).onchange = render);
+moreObserver.observe(el("more"));
 start();
 </script>
 </body>
