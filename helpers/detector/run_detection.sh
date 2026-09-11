@@ -216,10 +216,15 @@ if [[ -n "$SSHLOGINFILE" ]]; then
   PAR+=(--sshloginfile "$SSHLOGINFILE" --workdir "$(dirname "$WORKER")")
 fi
 
+# A failed job makes parallel exit non-zero, which under set -e would kill
+# the script here — silently dropping the finish banner exactly when it
+# matters. Capture the status and carry on.
+set +e
 printf '%s\n' "${FILES[@]}" | "${PAR[@]}" \
   "$PYBIN" "$WORKER" --input {} \
     --input-root "$RECORDINGS" --output-root "$DETECTIONS"
 PAR_RC=$?
+set -e
 
 RUN_END=$(date +%s); ELAPSED=$((RUN_END - RUN_START))
 printf '=== run finished %s | %d file(s) in %dm%02ds' \

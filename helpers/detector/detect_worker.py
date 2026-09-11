@@ -625,6 +625,53 @@ def process(input_path: Path, input_root: Path, output_root: Path,
     return 0
 
 
+MAX_ATTEMPTS = 3   # failures tolerated before a file is written off
+
+
+def record_failure(input_path, input_root, output_root, err: str) -> int:
+    """Bounded retry for files that fail.
+
+    Without this a corrupt recording, or a detector crash, leaves no manifest
+    and is retried by every sweep forever - a mid-file crash costs a full
+    model load each time. Track attempts in a sidecar; after MAX_ATTEMPTS
+    write an error manifest so the file counts as done. --force clears it if
+    you want to retry later (e.g. after fixing the file or the model).
+    """
+    manifest_path, _ = out_paths(input_path, input_root, output_root)
+    marker = manifest_path.with_suffix(manifest_path.suffix + ".failed")
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        state = json.loads(marker.read_text()) if marker.exists() else {}
+    except (json.JSONDecodeError, OSError):
+        state = {}
+    attempts = int(state.get("attempts", 0)) + 1
+    state.update({"attempts": attempts, "last_error": err[-500:],
+                  "last_attempt": time.strftime("%Y-%m-%dT%H:%M:%S%z")})
+    if attempts < MAX_ATTEMPTS:
+        marker.write_text(json.dumps(state, indent=1))
+        print(f"FAILED ({attempts}/{MAX_ATTEMPTS}, will retry): "
+              f"{input_path.name}: {err.splitlines()[-1] if err else '?'}",
+              file=sys.stderr)
+        return 1
+    # Give up: an error manifest makes the sweep stop retrying.
+    manifest = {
+        "source": str(input_path.relative_to(input_root)),
+        "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+        "error": err.splitlines()[-1] if err else "unknown",
+        "attempts": attempts,
+        "labels": [], "event_count": 0, "moving_count": 0,
+        "stationary_count": 0, "tracks": [],
+        "host": {"name": socket.gethostname(), "model": MODEL_PATH},
+    }
+    tmp = manifest_path.with_suffix(manifest_path.suffix + ".tmp")
+    tmp.write_text(json.dumps(manifest, indent=1))
+    tmp.rename(manifest_path)
+    marker.unlink(missing_ok=True)
+    print(f"FAILED ({attempts}/{MAX_ATTEMPTS}, giving up, error manifest "
+          f"written): {input_path.name}: {manifest['error']}", file=sys.stderr)
+    return 1
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[1])
     ap.add_argument("--input", required=True, type=Path)
@@ -632,8 +679,22 @@ def main():
     ap.add_argument("--output-root", required=True, type=Path)
     ap.add_argument("--no-thumbs", action="store_true")
     a = ap.parse_args()
-    sys.exit(process(a.input.resolve(), a.input_root.resolve(),
-                     a.output_root.resolve(), save_thumbs=not a.no_thumbs))
+    inp, root, out = (a.input.resolve(), a.input_root.resolve(),
+                      a.output_root.resolve())
+    try:
+        rc = process(inp, root, out, save_thumbs=not a.no_thumbs)
+    except Exception:  # noqa: BLE001 - anything at all must not loop forever
+        import traceback
+        rc = record_failure(inp, root, out, traceback.format_exc())
+    else:
+        if rc != 0:
+            rc = record_failure(inp, root, out, "worker returned non-zero "
+                                "(unreadable or unsupported file)")
+        else:
+            # A success clears any earlier failure marker.
+            mp, _ = out_paths(inp, root, out)
+            mp.with_suffix(mp.suffix + ".failed").unlink(missing_ok=True)
+    sys.exit(rc)
 
 
 if __name__ == "__main__":

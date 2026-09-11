@@ -136,6 +136,8 @@
   dialog{padding:0; width:min(90vw,880px); border-radius:4px}
   dialog::backdrop{background:#00000066}
   dialog video{width:100%; display:block; background:#000; max-width:none}
+  dialog video[hidden]{display:none}
+  .gone{padding:2.5rem 1rem; text-align:center; color:var(--dim); background:var(--sunk)}
   .meta{
     display:flex; gap:1rem; flex-wrap:wrap; align-items:center;
     padding:.7rem .9rem; font-size:.85rem; color:var(--dim);
@@ -199,6 +201,7 @@
 
 <dialog id="detail">
   <video id="player" controls preload="metadata"></video>
+  <div id="gone" class="gone" hidden></div>
   <div class="meta">
     <span><span class="k" id="dCam"></span> <span id="dTime"></span></span>
     <span><span class="k" id="dLabel"></span> <span id="dDur"></span></span>
@@ -330,6 +333,23 @@ function showEmpty(title, body){
 
 function openDetail(r){
   const v = el("player");
+  v.hidden = false; el("gone").hidden = true;
+  /* A manifest can outlive its recording by design (manifests are kept
+     longer as a searchable index). A missing file and an unplayable codec
+     fire the same error event, so check which it is before blaming
+     retention — an H.265 camera in Firefox is a codec problem, not a
+     missing recording. */
+  v.onerror = async () => {
+    v.hidden = true;
+    let msg = "This recording can't be played.";
+    try{
+      const h = await fetch(v.src, {method:"HEAD", cache:"no-store"});
+      msg = h.ok
+        ? "The recording exists but this browser can't decode its video format. H.264 plays everywhere; H.265/HEVC does not."
+        : "This recording is no longer on disk — the detection outlived the video's retention window.";
+    }catch(e){}
+    el("gone").textContent = msg; el("gone").hidden = false;
+  };
   v.src = REC_BASE + r.src;
   v.currentTime = 0;
   /* Seek once metadata is available; a few seconds of lead-in gives the

@@ -206,6 +206,7 @@ status:
 	@echo "manifests  : $$(find $(DETECTIONS) -name '*.json' 2>/dev/null | wc -l)"
 	@echo "with events: $$(grep -rl '\"event_count\": [1-9]' $(DETECTIONS) --include='*.json' 2>/dev/null | wc -l)"
 	@echo "thumbnails : $$(find $(DETECTIONS) -name '*.jpg' 2>/dev/null | wc -l)"
+	@echo "failed     : $$(grep -rl '"error":' $(DETECTIONS) --include='*.json' 2>/dev/null | wc -l) written off, $$(find $(DETECTIONS) -name '*.failed' 2>/dev/null | wc -l) retrying"
 	@echo "output size: $$(du -sh $(DETECTIONS) 2>/dev/null | cut -f1)"
 	@[ -e $(JOBLOG) ] && echo "joblog     : $$(( $$(wc -l < $(JOBLOG)) - 1 )) jobs recorded" || echo "joblog     : none yet"
 	@n=$$(pgrep -af 'detect_worker\.py|run_detection\.sh' 2>/dev/null \

@@ -37,6 +37,18 @@ while IFS= read -r -d '' m; do
   [[ -e "$RECORDINGS/$rel" ]] || rm -f "$m"
 done
 
-# 4. Empty directories left behind
+# 4. Failure markers whose source recording is gone, and the joblog, which
+#    is append-only and would otherwise grow without bound.
+find "$DETECTIONS" -type f -name '*.failed' -print0 |
+while IFS= read -r -d '' m; do
+  rel=${m#"$DETECTIONS"/}; rel=${rel%.json.failed}
+  [[ -e "$RECORDINGS/$rel" ]] || rm -f "$m"
+done
+JOBLOG="$DETECTIONS/.joblog"
+if [[ -f "$JOBLOG" ]] && [[ $(wc -l < "$JOBLOG") -gt 20000 ]]; then
+  { head -1 "$JOBLOG"; tail -n 10000 "$JOBLOG"; } > "$JOBLOG.tmp" && mv "$JOBLOG.tmp" "$JOBLOG"
+fi
+
+# 5. Empty directories left behind
 find "$DETECTIONS" -mindepth 1 -type d -empty -delete
 echo "=== prune finished $(date '+%Y-%m-%d %H:%M:%S') | $(du -sh "$DETECTIONS" | cut -f1) in $DETECTIONS ==="

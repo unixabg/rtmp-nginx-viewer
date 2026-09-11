@@ -289,6 +289,13 @@ Notes:
   back to built-in defaults with a warning rather than failing the run.
 * `classes: []` still writes a stub manifest so the file counts as done and
   isn't retried on every pass.
+* **Failures are bounded.** A file that can't be opened, or a detector
+  crash mid-file, is retried on the next two sweeps and then written off
+  with an error manifest (`"error": ...`) so the sweep stops touching it.
+  Without this a single corrupt recording would be retried every ten
+  minutes for its whole retention life. `make status` shows the counts;
+  `--force` clears a written-off file if you want to retry after fixing
+  the cause.
 * Each manifest records the rule that was applied under `worker.rule`, so
   you can tell later why a given file was analyzed the way it was.
 * Changing a rule does **not** reprocess already-done files (they have
