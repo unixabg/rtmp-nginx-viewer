@@ -195,7 +195,7 @@
     <select id="camera"><option value="">All cameras</option></select>
     <select id="label"><option value="">All objects</option></select>
     <select id="hour" aria-label="Filter by hour"><option value="">All hours</option></select>
-    <label class="toggle"><input type="checkbox" id="hideStill" checked> Hide parked, static and unconfirmed</label>
+    <label class="toggle"><input type="checkbox" id="hideStill" checked> Hide parked, static, and unconfirmed</label>
   </div>
 </header>
 
@@ -356,7 +356,7 @@ function render(){
       && quiet(r)).length;
     return showEmpty("Nothing matches these filters",
       hide && hidden
-        ? `${hidden} parked, static or unconfirmed ${hidden === 1 ? "object is" : "objects are"} hidden. Untick the filter to see them.`
+        ? `${hidden} parked, static, or unconfirmed ${hidden === 1 ? "object is" : "objects are"} hidden. Untick the filter to see them.`
         : `Try another camera, object, ${hour ? "hour, " : ""}or day.`);
   }
   view = list; shown = 0;
