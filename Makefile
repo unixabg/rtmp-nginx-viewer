@@ -42,6 +42,12 @@ install: check_deps
 	[ -f $(NGINX_CONF_DIR)/cameras-sub.conf ] && cp $(NGINX_CONF_DIR)/cameras-sub.conf $(NGINX_CONF_DIR)/cameras-sub.conf.backup || true
 	[ -f $(WEB_ROOT)/index.html ] && cp $(WEB_ROOT)/index.html $(WEB_ROOT)/index.html.backup || true
 
+	# Media directories. Created whether or not recording is enabled, so
+	# the nginx location blocks always resolve; index.html probes for
+	# CONTENT rather than existence and hides the nav entries for
+	# whichever of these is still empty.
+	install -d -m 755 /videos/recordings /videos/thumbnails /videos/detections
+
 	# Install scripts
 	install -m 755 nginx-thumbs.sh /opt/nginx-thumbs
 

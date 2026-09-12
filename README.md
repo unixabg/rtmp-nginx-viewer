@@ -55,24 +55,101 @@ Restart nginx:
 
 ```systemctl restart nginx```
 
-If you want the nvr features below is the general outline. Create a the folder for video recording and thumbnail storage:
-
-```mkdir -p /videos/recordings```
-```mkdir -p /videos/thumbnails```
+If you want the nvr features below is the general outline. `make install`
+creates /videos/recordings, /videos/thumbnails and /videos/detections for
+you, and the /recordings and /detections locations are enabled in
+/etc/nginx/sites-enabled/default, so all that is left is nginx.conf.
 
 > [!NOTE]
 > Be careful here if you have mounted a block device to /videos
-Set the permissions so nginx can write to the folder:
+
+Set the permissions so nginx can write to the folders:
 
 ```chown -R www-data: /videos/recordings```
 ```chown -R www-data: /videos/thumbnails```
 
 Edit the installed /etc/nginx/nginx.conf and unremark the recording section.
-Edit the installed /etc/nginx/sites-enabled/default and unremark the /recordings location.
+While you are there, unremark the exec_record_done line that calls
+/opt/nginx-thumbs if you want the per-camera thumbnails that the Camera
+Status page displays.
 
 Restart nginx:
 
 ```systemctl restart nginx```
+
+#### Navigation adapts to what is enabled
+
+The home page shows four icons: Live View, History, Camera Status and
+Detections. Only Live View works without recording — History lists the
+recordings, the Camera Status thumbnails are written by the
+exec_record_done hook when a segment closes, and the detector reads the
+recordings. Rather than linking to pages that would be blank, index.html
+asks the server what is actually there and shows only those entries:
+
+| Icon | Shown when |
+| --- | --- |
+| Live View | always |
+| History | /recordings/ lists at least one .mp4 |
+| Camera Status | /thumbnails/ lists at least one .jpg |
+| Detections | /detections/index/days.json reports at least one day |
+
+The test is for content rather than for the directory, because `make
+install` creates all three directories whether or not you use them. So an
+icon appears when the feature starts producing output — a freshly enabled
+recording setup gains its History icon when the first segment closes — and
+nothing has to be configured to make this work.
+
+If a path is behind auth_basic and the browser has not authenticated yet,
+the probe sees a 401 and shows the icon rather than hiding it, so the link
+is still there to authenticate through.
+
+#### Upgrading an existing install
+
+```git pull```
+```make upgrade```
+
+`make upgrade` refreshes the web pages and the vendored JS/CSS. It
+deliberately leaves your nginx configuration alone, since those files are
+where your cameras and local choices live and overwriting them would be
+worse than leaving a feature unconfigured.
+
+That means location blocks added in a newer release are not picked up
+automatically. If an icon you expect never appears, compare your
+/etc/nginx/sites-available/default against the one in the repo and merge
+in what is missing — /recordings and /detections are the two that the
+navigation depends on. Nothing breaks in the meantime; the probe simply
+finds nothing at those paths and the icon stays hidden.
+
+```diff -u /etc/nginx/sites-available/default default```
+
+#### Securing an exposed install
+
+The /recordings, /detections and /thumbnails locations use nginx autoindex,
+which means anyone who can reach the server can browse a list of every
+recording and every detection thumbnail. That is fine on an isolated
+network and not fine on anything reachable from outside. For those, put
+TLS in front of it and add basic auth to the server block:
+
+```
+auth_basic "Restricted";
+auth_basic_user_file /etc/nginx/.htpasswd;
+```
+
+Create the file with `htpasswd -c /etc/nginx/.htpasswd <user>` from the
+apache2-utils package.
+
+### Detection helper (optional)
+
+helpers/detector adds object detection over the completed recordings: it
+runs a YOLO model across sampled frames, writes one JSON manifest and a
+few thumbnails per recording, and serves a browsable page of what was
+found at /detections/. It runs from cron, low-priority, so recording
+always wins, and it works on hardware from a Raspberry Pi to a CUDA node —
+a mixed cluster can share one recordings tree over NFS.
+
+See helpers/detector/README.md for installation, per-camera rules, and the
+performance notes. Once it has written its first manifests, the Detections
+icon appears in the navigation on its own.
 
 ### Kiosk Feature
 

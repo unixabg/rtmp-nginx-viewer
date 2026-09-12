@@ -94,19 +94,31 @@ server {
 		autoindex_localtime on;
 	}
 
-	#location /detections {
-	#	alias /videos/detections;
-	#	index detections.html;
-	#	autoindex off;                 # the page reads index/*.json instead
-	#}
+	location /recordings {
+		# Completed recording segments. history.html lists these from the
+		# autoindex, so it needs both the alias and autoindex on.
+		#
+		# This exposes a browsable list of every recording to anyone who
+		# can reach the server. On anything reachable from outside, pair
+		# it with TLS and auth_basic - see "Securing an exposed install"
+		# in the README.
+		alias /videos/recordings;
+		add_header Cache-Control no-cache;
+		autoindex on;
+		autoindex_localtime on;
+	}
 
-	#location /recordings {
-	#	# Serve video fragments
-	#	alias /videos/recordings;
-	#	add_header Cache-Control no-cache;
-	#	autoindex on;
-	#	autoindex_localtime on;
-	#}
+	location /detections {
+		# Detector helper output: manifests, thumbnails and the browse
+		# page (helpers/detector). Harmless when the helper is not
+		# installed - the directory is simply empty and index.html hides
+		# the nav entry. Same exposure note as /recordings above.
+		alias /videos/detections;
+		index detections.html;
+		add_header Cache-Control no-cache;
+		autoindex on;
+		autoindex_localtime on;
+	}
 
 	location / {
 		# First attempt to serve request as file, then
