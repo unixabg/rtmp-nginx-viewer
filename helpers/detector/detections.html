@@ -66,15 +66,17 @@
   }
   h1{margin:0}
   h1 span{color:var(--faint); font-weight:400; margin-left:.5rem; font-size:.9rem}
-  /* The viewer is served from /detections/ by the main project's nginx
-     config, so "/" is the RTMP viewer home page. Matches the "Back to
-     Home" link on history.html and camera-status.html, shortened because
-     this header also carries three filters and a toggle. */
-  a.home{
+  /* Served from /detections/ by the main project's nginx config, so "/"
+     is the viewer home page. Same class name, wording and size as the
+     .home-link in the project's style.css, restated here because this
+     page carries its own palette - var(--dim) rather than a fixed grey,
+     so it stays legible in dark mode. align-self keeps it on the h1's
+     line in a header whose items are baseline-aligned. */
+  a.home-link{
     color:var(--dim); text-decoration:none; font-size:.85rem;
     white-space:nowrap; align-self:center;
   }
-  a.home:hover{color:var(--ink); text-decoration:underline}
+  a.home-link:hover{color:var(--ink); text-decoration:underline}
   .filters{display:flex; gap:.6rem; align-items:center; flex-wrap:wrap; margin-left:auto}
   .filters select{font-family:inherit}
   label.toggle{display:flex; align-items:center; gap:.4rem; font-size:.85rem; color:var(--dim)}
@@ -199,13 +201,13 @@
 <body>
 
 <header>
-  <a class="home" href="/" title="Back to Home">&larr; Home</a>
+  <a class="home-link" href="/" title="Back to Home">&larr; Home</a>
   <h1>Detections<span id="count"></span></h1>
   <div class="filters">
     <select id="camera"><option value="">All cameras</option></select>
     <select id="label"><option value="">All objects</option></select>
     <select id="hour" aria-label="Filter by hour"><option value="">All hours</option></select>
-    <label class="toggle"><input type="checkbox" id="hideStill" checked> Hide parked, static, and unconfirmed</label>
+    <label class="toggle"><input type="checkbox" id="hideStill" checked> Hide parked, static and unconfirmed</label>
   </div>
 </header>
 
@@ -366,7 +368,7 @@ function render(){
       && quiet(r)).length;
     return showEmpty("Nothing matches these filters",
       hide && hidden
-        ? `${hidden} parked, static, or unconfirmed ${hidden === 1 ? "object is" : "objects are"} hidden. Untick the filter to see them.`
+        ? `${hidden} parked, static or unconfirmed ${hidden === 1 ? "object is" : "objects are"} hidden. Untick the filter to see them.`
         : `Try another camera, object, ${hour ? "hour, " : ""}or day.`);
   }
   view = list; shown = 0;
