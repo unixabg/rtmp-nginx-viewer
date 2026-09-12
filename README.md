@@ -103,6 +103,18 @@ If a path is behind auth_basic and the browser has not authenticated yet,
 the probe sees a 401 and shows the icon rather than hiding it, so the link
 is still there to authenticate through.
 
+#### Naming your site
+
+The home page reads /var/www/html/sitename.txt and uses the first line as
+the welcome message and the browser tab title:
+
+```echo "North Depot" > /var/www/html/sitename.txt```
+
+`make install` creates it with a default only when it does not already
+exist, and `make upgrade` leaves it alone, so the name survives upgrades.
+Delete the file to go back to the default. `make uninstall` keeps it;
+`make purge` removes it.
+
 #### Upgrading an existing install
 
 ```git pull```

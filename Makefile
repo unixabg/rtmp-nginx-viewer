@@ -64,6 +64,9 @@ install: check_deps
 	install -m 644 live.html $(WEB_ROOT)/
 	install -m 644 style.css $(WEB_ROOT)/
 	install -m 644 version.txt $(WEB_ROOT)/
+	# Site name shown on the home page. Created once and never
+	# overwritten, so `make upgrade` cannot clobber a local name.
+	[ -f $(WEB_ROOT)/sitename.txt ] || install -m 644 sitename.txt $(WEB_ROOT)/
 	# Install cron job for recording housekeeping
 	install -m 644 crontab /etc/cron.d/rtmp-nginx-viewer
 
@@ -99,6 +102,8 @@ upgrade:
 	install -m 644 kiosk.html $(WEB_ROOT)/
 	install -m 644 live.html $(WEB_ROOT)/
 	install -m 644 version.txt $(WEB_ROOT)/
+	# Only if absent - see install. An upgrade never rewrites the name.
+	[ -f $(WEB_ROOT)/sitename.txt ] || install -m 644 sitename.txt $(WEB_ROOT)/
 
 	# Minimal: refresh JS/CSS deps directly into WEB_ROOT
 	install -d $(WEB_ROOT)/vendor/hls $(WEB_ROOT)/vendor/ovenplayer $(WEB_ROOT)/vendor/flatpickr
@@ -152,6 +157,8 @@ purge: uninstall
 
 	# Remove additional files created by install, if any
 	rm -f $(NGINX_CONF_DIR)/cameras.conf
+	# Local site name: kept by uninstall, removed by purge
+	rm -f $(WEB_ROOT)/sitename.txt
 	# Remove scripts
 	rm -f /opt/nginx-thumbs
 

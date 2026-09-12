@@ -34,7 +34,7 @@
 <body>
     <div id="welcomeContainer">
         <div id="welcomeMessage">
-            <p>Welcome to RTMP Nginx Viewer</p>
+            <p id="welcomeText">Welcome to RTMP Nginx Viewer</p>
         </div>
     </div>
     </br >
@@ -143,6 +143,23 @@
                 else if (r.ok && (await r.json()).length) show('navDetections');
             } catch (e) { /* helper not installed */ }
         })();
+
+        /* Site name. sitename.txt is created by `make install` only when
+         * it is absent and is never overwritten by `make upgrade`, so a
+         * site can name itself once and keep that name across upgrades.
+         * The markup carries the default, so an install without the file
+         * (or with an unreadable one) reads exactly as it did before. */
+        fetch(`/sitename.txt?timestamp=${new Date().getTime()}`)
+            .then(response => response.ok ? response.text() : null)
+            .then(name => {
+                // First line only, so a stray second line or an editor's
+                // trailing newline cannot end up in the page title.
+                const site = (name || '').split('\n')[0].trim();
+                if (!site) return;
+                document.getElementById('welcomeText').textContent = `Welcome to ${site}`;
+                document.title = site;
+            })
+            .catch(() => { /* keep the default in the markup */ });
 
         // Fetch and display version information
         fetch(`/version.txt?timestamp=${new Date().getTime()}`)
