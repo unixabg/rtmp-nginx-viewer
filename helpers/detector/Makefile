@@ -32,7 +32,9 @@ JOBS        ?= 2
 NICE        ?= nice -n 15 ionice -c3
 
 # GPU=1 installs CUDA-enabled torch; default is the slim CPU wheel set.
-CRON_LIMIT  ?= 40    # max files per scheduled sweep; newest first
+# Max files per scheduled sweep, newest first. Kept on its own line: an
+# inline comment would leave the trailing spaces in the value.
+CRON_LIMIT  ?= 40
 LOGFILE     ?= /var/log/detection.log
 # Retention for the detections tree. Thumbnails are the bulky part, so they
 # usually expire with the recordings; the tiny JSON manifests are kept longer
@@ -101,11 +103,23 @@ help:
 	@grep -E '^## ' $(MAKEFILE_LIST) | sed 's/^## //' | \
 	    awk -F': ' '{printf "  %-18s %s\n", $$1, $$2}'
 	@echo
-	@echo "current settings (override on the command line):"
-	@printf "  %-14s %s\n" PREFIX $(PREFIX) RECORDINGS $(RECORDINGS) \
+	@echo "paths and processing (override on the command line):"
+	@printf "  %-16s %s\n" PREFIX $(PREFIX) RECORDINGS $(RECORDINGS) \
 	    DETECTIONS $(DETECTIONS) JOBS $(JOBS) GPU $(GPU) ACCEL $(ACCEL) \
-	    CUDA_INDEX $(CUDA_INDEX) DECODE "$(if $(DECODE),$(DECODE),auto (worker default))" \
-	    THUMB_DAYS $(THUMB_DAYS) MANIFEST_DAYS $(MANIFEST_DAYS)
+	    CUDA_INDEX $(CUDA_INDEX)
+	@echo
+	@echo "decoding and sampling (empty = the worker's own default):"
+	@printf "  %-16s %s\n" \
+	    DECODE "$(if $(DECODE),$(DECODE),auto)" \
+	    DECODE_KEYFRAMES "$(if $(DECODE_KEYFRAMES),$(DECODE_KEYFRAMES),auto)" \
+	    DECODE_MAX_W "$(if $(DECODE_MAX_W),$(DECODE_MAX_W),0 (source))" \
+	    INTERVAL_SCALE "$(if $(INTERVAL_SCALE),$(INTERVAL_SCALE),auto)"
+	@echo
+	@echo "schedule and retention (used by install-cron and prune):"
+	@printf "  %-16s %s\n" CRON_LIMIT $(CRON_LIMIT) \
+	    SINCE "$(if $(SINCE),$(SINCE),(none - each sweep sees every recording))" \
+	    PRUNE_AT "$(PRUNE_AT)" THUMB_DAYS $(THUMB_DAYS) \
+	    MANIFEST_DAYS $(MANIFEST_DAYS) LOGFILE $(LOGFILE)
 	@echo
 	@echo "  tip: PROFILE=viewer switches to /videos paths"
 
