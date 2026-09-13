@@ -1,4 +1,8 @@
-.PHONY: install upgrade uninstall purge
+.PHONY: help install upgrade uninstall purge check_deps
+
+# `make` on its own prints the help rather than running the first target,
+# which would otherwise be check_deps and look like nothing happened.
+.DEFAULT_GOAL := help
 
 WEB_ROOT=/var/www/html
 NGINX_CONF_DIR=/etc/nginx
@@ -10,7 +14,20 @@ HLSJS_VER      ?= 1.5.8
 OVENPLAYER_VER ?= 0.10.43
 FLATPICKR_VER  ?= 4.6.13
 
+## help: this list
+help:
+	@echo "rtmp-nginx-viewer $$(cut -d' ' -f2 version.txt) — targets:"; echo
+	@grep -E '^## ' $(MAKEFILE_LIST) | sed 's/^## //' | \
+	    awk -F': ' '{printf "  %-14s %s\n", $$1, $$2}'
+	@echo
+	@echo "paths (override on the command line):"
+	@printf "  %-16s %s\n" WEB_ROOT $(WEB_ROOT) NGINX_CONF_DIR $(NGINX_CONF_DIR)
+	@echo
+	@echo "  upgrade refreshes web content only and never touches your"
+	@echo "  nginx configuration or sitename.txt — see README.md."
+
 # Dependency check target
+## check_deps: report any missing apt packages
 REQUIRED_PKGS := build-essential ffmpeg vim git nginx libnginx-mod-rtmp curl
 
 check_deps:
@@ -34,6 +51,7 @@ check_deps:
 		echo "All dependencies are installed."; \
 	fi
 
+## install: first-time install (backs up existing nginx config and index.html)
 install: check_deps
 	# Backup existing configurations and web content if they exist
 	[ -f $(NGINX_CONF_DIR)/nginx.conf ] && cp $(NGINX_CONF_DIR)/nginx.conf $(NGINX_CONF_DIR)/nginx.conf.backup || true
@@ -91,6 +109,7 @@ install: check_deps
 		nginx -s reload; \
 	fi
 
+## upgrade: refresh web pages and vendored assets only
 upgrade:
 	# Install scripts
 	install -m 755 nginx-thumbs.sh /opt/nginx-thumbs
@@ -121,6 +140,7 @@ upgrade:
 
 	@echo "Upgrade complete."
 
+## uninstall: remove web content and restore the backed-up config
 uninstall:
 	# Restore backup configurations if they exist
 	[ -f $(NGINX_CONF_DIR)/nginx.conf.backup ] && mv $(NGINX_CONF_DIR)/nginx.conf.backup $(NGINX_CONF_DIR)/nginx.conf || true
@@ -151,9 +171,14 @@ uninstall:
 		nginx -s reload; \
 	fi
 
+## purge: uninstall, plus cameras.conf, scripts and sitename.txt
 purge: uninstall
-	# Call purge in helpers/Makefile
-	$(MAKE) -C helpers purge
+	# Helpers are installed and removed from their own directories, so a
+	# top-level purge deliberately leaves them alone - `make purge` in
+	# helpers/detector, helpers/nvr-backup, etc. There is no
+	# helpers/Makefile; this line never worked and is kept only as a
+	# marker in case a fan-out target is added later.
+	#$(MAKE) -C helpers purge
 
 	# Remove additional files created by install, if any
 	rm -f $(NGINX_CONF_DIR)/cameras.conf
