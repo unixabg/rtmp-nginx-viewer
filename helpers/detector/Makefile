@@ -279,7 +279,11 @@ if not cams:
 
 # Speed and segment length from what this node has actually produced.
 segs, rates = [], []
-for root, _d, files in os.walk(det):
+for root, dirs, files in os.walk(det):
+    # The browse index lives alongside the manifests and is JSON too -
+    # days.json is a list, not an object - so skip it rather than
+    # type-checking every file we open.
+    dirs[:] = [d for d in dirs if d != "index"]
     for f in files:
         if not f.endswith(".json"):
             continue
@@ -287,9 +291,11 @@ for root, _d, files in os.walk(det):
         try:
             if os.path.getmtime(p) < time.time() - 7 * 86400:
                 continue
-            t = json.load(open(p)).get("timing") or {}
+            m = json.load(open(p))
         except (OSError, ValueError):
             continue
+        # Anything else that turns up in this tree is not ours.
+        t = m.get("timing") or {} if isinstance(m, dict) else {}
         if t.get("video_sec"):
             segs.append(t["video_sec"])
         if t.get("realtime_factor"):
