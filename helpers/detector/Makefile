@@ -237,6 +237,107 @@ else
 endif
 	sudo rm -rf $(TMPDIR_PIP)
 
+# Can this node keep up? Two numbers decide it, and neither is obvious from
+# watching the log: a sweep that quietly skips ticks looks identical to one
+# that is winning. Reported by `doctor`, or on its own with `make capacity`.
+#
+# Kept as an exported variable piped to python rather than an installed
+# script, so `make capacity` works from a checkout without `make install`.
+define CAPACITY_PY
+import json, os, statistics, sys, time
+
+rec, det, jobs, cron_limit, tick = sys.argv[1:6]
+jobs, cron_limit, tick = int(jobs), int(cron_limit), int(tick)
+
+# Cameras: nginx-rtmp names segments <Camera>-<epoch>-<date>-<time>.mp4, so
+# the basename up to the first dash is the stream. Only recent files count -
+# a camera decommissioned last year should not inflate the requirement.
+cutoff = time.time() - 24 * 3600
+cams, newest = set(), 0.0
+try:
+    with os.scandir(rec) as it:
+        for e in it:
+            if not e.name.endswith(".mp4"):
+                continue
+            try:
+                m = e.stat().st_mtime
+            except OSError:
+                continue
+            newest = max(newest, m)
+            if m >= cutoff:
+                cams.add(e.name.split("-", 1)[0])
+except OSError:
+    print("n/a (cannot read %s)" % rec); raise SystemExit
+
+if not cams:
+    if newest:
+        age = (time.time() - newest) / 3600.0
+        print("n/a (no recordings in the last 24h; newest is %.0fh old)" % age)
+    else:
+        print("n/a (no recordings found)")
+    raise SystemExit
+
+# Speed and segment length from what this node has actually produced.
+segs, rates = [], []
+for root, _d, files in os.walk(det):
+    for f in files:
+        if not f.endswith(".json"):
+            continue
+        p = os.path.join(root, f)
+        try:
+            if os.path.getmtime(p) < time.time() - 7 * 86400:
+                continue
+            t = json.load(open(p)).get("timing") or {}
+        except (OSError, ValueError):
+            continue
+        if t.get("video_sec"):
+            segs.append(t["video_sec"])
+        if t.get("realtime_factor"):
+            rates.append(t["realtime_factor"])
+
+n = len(cams)
+seg = statistics.median(segs) if segs else 300.0
+per_tick = n * (tick / seg)          # files arriving per sweep interval
+
+if not rates:
+    print("%d camera(s), ~%.0fs segments -> %.0f file(s) per %dmin tick"
+          % (n, seg, per_tick, tick // 60))
+    print("%-22s%s" % ("", "no manifests yet - run 'make run' once, then re-check"))
+else:
+    per_worker = statistics.median(rates)
+    # Workers share cores, so aggregate is sublinear in JOBS; this is the
+    # optimistic bound, which is the right way round for a warning.
+    agg = per_worker * jobs
+    head = agg / n
+    verdict = ("ok" if head >= 1.5 else
+               "TIGHT" if head >= 1.0 else "CANNOT KEEP UP")
+    print("%s - %d camera(s) need %dx realtime, node does ~%.0fx "
+          "(%.1fx per worker x %d jobs)" % (verdict, n, n, agg, per_worker, jobs))
+    print("%-22s%.1fx headroom; ~%.0f file(s) per %dmin tick at ~%.0fs segments"
+          % ("", head, per_tick, tick // 60, seg))
+    if head < 1.5:
+        print("%-22s%s" % ("", "raise JOBS, use a faster model export, or move "
+                               "cameras to another node"))
+
+if cron_limit < per_tick:
+    print("%-22sCRON_LIMIT=%d is below the %.0f file(s) that arrive each tick - "
+          "older recordings will never be reached"
+          % ("", cron_limit, per_tick))
+elif cron_limit < per_tick * 1.5:
+    print("%-22sCRON_LIMIT=%d leaves little margin over the %.0f that arrive "
+          "each tick (no room to work a backlog)" % ("", cron_limit, per_tick))
+endef
+export CAPACITY_PY
+
+## capacity: can this node keep up with its camera count?
+capacity:
+	@printf "%-22s" "capacity:"; \
+	  p=$$([ -x $(PY) ] && echo $(PY) || command -v python3); \
+	  if [ -z "$$p" ]; then echo "n/a (no python)"; \
+	  elif [ ! -d $(RECORDINGS) ]; then echo "n/a ($(RECORDINGS) not present)"; \
+	  else printf '%s\n' "$$CAPACITY_PY" | \
+	       $$p - $(RECORDINGS) $(DETECTIONS) $(JOBS) $(CRON_LIMIT) 600; fi
+
 ## doctor: check install, mounts, model, and permissions
 doctor:
 	@echo "=== detection add-on doctor ==="
@@ -303,6 +404,7 @@ doctor:
 	    ( [ -w $(DETECTIONS) ] && echo "ok  ($(DETECTIONS), writable)" || echo "NOT WRITABLE by $$(whoami)" ) \
 	    || echo "MISSING — mkdir -p $(DETECTIONS)"
 	@printf "%-22s" "manifests:";        echo "$$(find $(DETECTIONS) -name '*.json' 2>/dev/null | wc -l) written"
+	@$(MAKE) --no-print-directory capacity
 	@echo "=== end ==="
 
 ## status: how much has been processed, and what is left

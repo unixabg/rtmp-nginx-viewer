@@ -374,6 +374,43 @@ source, so scaling is not perfectly neutral for detection either.
 `cv2` ignores this setting — OpenCV decodes at source resolution and
 scaling afterwards saves nothing.
 
+### Will this node keep up?
+
+A sweep runs every 10 minutes, so each tick has to clear every recording
+those 10 minutes produced: at 5-minute segments that is **two files per
+camera**, or 100 files for a 50-camera site. Since each camera produces one
+second of video per second, the requirement in `bench`'s units is simply
+**one times realtime per camera** — 50 cameras need 50x aggregate.
+
+The failure is silent. `flock -n` skips a tick that is still running, the
+sweep takes newest first, and the log shows successful runs throughout —
+while the oldest recordings are never reached and quietly age out under the
+retention policy. Nothing errors.
+
+`make doctor` reports it, or run it alone:
+
+```
+make capacity PROFILE=viewer
+```
+
+```
+capacity:             ok - 12 camera(s) need 12x realtime, node does ~120x (30.0x per worker x 4 jobs)
+                      10.0x headroom; ~24 file(s) per 10min tick at ~300s segments
+```
+
+Cameras are counted from recordings written in the last 24 hours, so a
+decommissioned camera stops counting against you; segment length and speed
+come from this node's own manifests over the last week. Verdicts are `ok`
+at 1.5x headroom or better, `TIGHT` above 1.0, and `CANNOT KEEP UP` below.
+
+Aggregate is the optimistic bound — workers share cores, so doubling `JOBS`
+never quite doubles throughput. Treat 1.5x as the minimum, not the target.
+
+`CRON_LIMIT` is checked separately: it caps files per tick, so if it is
+below the arrival rate the node cannot keep up no matter how fast it is.
+The check flags both "below" and "little margin", since a limit that only
+just covers arrivals leaves nothing for working through a backlog.
+
 ## 2b. Per-camera detection rules (cameras.json)
 
 Different cameras want different objects: an indoor camera only cares about
