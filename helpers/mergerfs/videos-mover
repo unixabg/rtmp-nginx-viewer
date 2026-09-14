@@ -13,8 +13,8 @@
 # safe to overwrite on upgrade and easy to diff across a fleet.
 #
 #   # /etc/cron.d/rtmp-nginx-viewer
-#   KEEP_HOURS=48
-#   RETENTION_DAYS=30
+#   SSD_HOURS=36
+#   HDD_DAYS=30
 #   0 * * * * root /opt/videos-mover >> /var/log/videos-mover.log 2>&1
 #
 # The values below are the fallbacks used when nothing sets them.
@@ -26,19 +26,45 @@ HDD="${HDD:-/mnt/hdd/videos}"
 # Optional third tier. Leave empty to disable archiving.
 NFS="${NFS:-}"
 
-# Hours of footage to keep on the SSD tier before moving to HDD
-KEEP_HOURS="${KEEP_HOURS:-48}"
+# How long footage lives on each tier. One setting per tier, and each one
+# means the same thing: how old a recording may get here before the next
+# stage takes it. What "next stage" means depends on the tier:
+#
+#   SSD_HOURS  age on SSD -> moved to HDD
+#   HDD_DAYS   age on HDD -> moved to NFS when NFS is set, else DELETED
+#   NFS_DAYS   age on NFS -> DELETED            (ignored when NFS is unset)
+#
+# So the last tier in your chain is the one that deletes: HDD_DAYS without
+# an archive, NFS_DAYS with one. Leave the deleting one empty and nothing
+# is ever purged - the disk fills instead.
+#
+# All three are ages SINCE THE RECORDING WAS MADE, not time spent on that
+# tier: moves use "rsync -a", which preserves mtime, so a file carries its
+# original timestamp across every tier. HDD_DAYS=30 means "30 days old",
+# and the hours it spent on the SSD are part of that 30 days, not extra.
+#
+# With an archive configured the two must be ordered - HDD_DAYS is when a
+# file LEAVES the HDD and NFS_DAYS is when it is deleted, so NFS_DAYS has
+# to be the larger of the two or files arrive on the archive already
+# expired and are deleted on the same run. The script refuses to start if
+# they are the wrong way round.
+SSD_HOURS="${SSD_HOURS:-${KEEP_HOURS:-48}}"
 
 # SSD filesystem usage percent that triggers extra oldest-first eviction
 FILL_LIMIT="${FILL_LIMIT:-75}"
 
-# Days of footage to keep on the HDD tier before archiving to NFS
-# (only used when NFS is set)
-ARCHIVE_DAYS="${ARCHIVE_DAYS:-30}"
-
-# Days of footage to keep on the final tier before deletion.
-# Applies to NFS when set, otherwise to the HDD. Empty disables purging.
-RETENTION_DAYS="${RETENTION_DAYS:-}"
+# Older names, still honoured so existing crontabs keep working. Note the
+# mapping for RETENTION_DAYS depends on NFS, which is exactly the ambiguity
+# these names are being retired for: it used to mean "delete from whichever
+# tier happens to be last", so the same line meant the HDD on one box and
+# the archive on another. Set the new names to silence the warning.
+if [ -n "$NFS" ]; then
+    HDD_DAYS="${HDD_DAYS:-${ARCHIVE_DAYS:-30}}"
+    NFS_DAYS="${NFS_DAYS:-${RETENTION_DAYS:-}}"
+else
+    HDD_DAYS="${HDD_DAYS:-${RETENTION_DAYS:-}}"
+    NFS_DAYS=""
+fi
 
 # Lock file. Prevents overlapping runs when a pass takes longer than the
 # cron interval. Set to empty to disable locking (not recommended).
@@ -83,7 +109,7 @@ require_int() {
     esac
 }
 
-require_int KEEP_HOURS "$KEEP_HOURS"
+require_int SSD_HOURS "$SSD_HOURS"
 require_int FILL_LIMIT "$FILL_LIMIT"
 
 if [ "$FILL_LIMIT" -lt 1 ] || [ "$FILL_LIMIT" -gt 99 ]; then
@@ -91,18 +117,54 @@ if [ "$FILL_LIMIT" -lt 1 ] || [ "$FILL_LIMIT" -gt 99 ]; then
     exit 1
 fi
 
-if [ -n "$NFS" ]; then
-    require_int ARCHIVE_DAYS "$ARCHIVE_DAYS"
-fi
-
-if [ -n "$RETENTION_DAYS" ]; then
-    require_int RETENTION_DAYS "$RETENTION_DAYS"
-    if [ "$RETENTION_DAYS" -lt 1 ]; then
-        log "ERROR: RETENTION_DAYS=0 would purge nearly everything." \
-            "Leave it empty to disable purging - aborting"
+# A tier whose threshold is 0 would sweep out anything over a day old. That
+# is never what someone meant to type, and for the deleting tier it is
+# unrecoverable, so refuse rather than guess.
+for v in HDD_DAYS NFS_DAYS; do
+    eval "val=\${$v}"
+    [ -z "$val" ] && continue
+    require_int "$v" "$val"
+    if [ "$val" -lt 1 ]; then
+        log "ERROR: $v=0 would sweep out nearly everything." \
+            "Leave it empty to disable that stage - aborting"
         exit 1
     fi
+done
+
+# With an archive, HDD_DAYS moves and NFS_DAYS deletes, so a file must be
+# allowed to reach the archive before it is eligible for deletion.
+if [ -n "$NFS" ] && [ -n "$HDD_DAYS" ] && [ -n "$NFS_DAYS" ] \
+   && [ "$NFS_DAYS" -le "$HDD_DAYS" ]; then
+    log "ERROR: NFS_DAYS=$NFS_DAYS is not greater than HDD_DAYS=$HDD_DAYS." \
+        "Files would be copied to the archive and deleted on the same run." \
+        "NFS_DAYS is the total age at deletion, so it must exceed the age" \
+        "at which files leave the HDD - aborting"
+    exit 1
 fi
+
+# Nothing deletes on this node. Worth saying once a run: the disk fills
+# silently otherwise, and "it stopped recording" is a confusing way to
+# find out.
+if [ -z "$NFS" ] && [ -z "$HDD_DAYS" ]; then
+    log "NOTE: HDD_DAYS is unset, so nothing is ever deleted from $HDD." \
+        "Set it to the days of footage you want to keep."
+elif [ -n "$NFS" ] && [ -z "$NFS_DAYS" ]; then
+    log "NOTE: NFS_DAYS is unset, so nothing is ever deleted from $NFS."
+fi
+
+# Deprecation notices, after validation so they sit next to the config line.
+for old_new in "KEEP_HOURS:SSD_HOURS" "ARCHIVE_DAYS:-" "RETENTION_DAYS:-"; do
+    o=${old_new%%:*}
+    eval "set_old=\${$o:-}"
+    [ -z "$set_old" ] && continue
+    case "$o" in
+        KEEP_HOURS)   n=SSD_HOURS ;;
+        ARCHIVE_DAYS) n=HDD_DAYS; [ -z "$NFS" ] && n="HDD_DAYS (ignored: no NFS)" ;;
+        RETENTION_DAYS) if [ -n "$NFS" ]; then n=NFS_DAYS; else n=HDD_DAYS; fi ;;
+    esac
+    log "WARNING: $o is deprecated, using it as $n. Rename it in your" \
+        "cron.d file; see helpers/mergerfs/README.md"
+done
 
 SRC="$SSD/recordings"
 DST="$HDD/recordings"
@@ -117,10 +179,11 @@ for d in "$SRC" "$DST"; do
     fi
 done
 
-# SSD usage percent, or empty if df fails.
-ssd_pcent() {
-    df --output=pcent "$SSD" 2>/dev/null | tail -1 | tr -dc '0-9'
+# Filesystem usage percent for a path, or empty if df fails.
+fs_pcent() {
+    df --output=pcent "$1" 2>/dev/null | tail -1 | tr -dc '0-9'
 }
+ssd_pcent() { fs_pcent "$SSD"; }
 
 move_file() {
     # $1 = relative path, $2 = source root, $3 = dest root
@@ -130,19 +193,69 @@ move_file() {
 
 # Record the settings this run actually used. With config living in cron.d,
 # the log is the only place that shows what was in effect at the time.
-log "config: KEEP_HOURS=$KEEP_HOURS FILL_LIMIT=$FILL_LIMIT" \
-    "NFS=${NFS:-off} ARCHIVE_DAYS=$ARCHIVE_DAYS" \
-    "RETENTION_DAYS=${RETENTION_DAYS:-off}"
+# Record the chain this run actually used, with the action each threshold
+# performs, so the log answers "what deletes, and when" on its own.
+if [ -n "$NFS" ]; then
+    log "config: SSD_HOURS=$SSD_HOURS -> HDD, HDD_DAYS=${HDD_DAYS:-off} -> NFS," \
+        "NFS_DAYS=${NFS_DAYS:-off} -> delete, FILL_LIMIT=$FILL_LIMIT"
+else
+    log "config: SSD_HOURS=$SSD_HOURS -> HDD, HDD_DAYS=${HDD_DAYS:-off} -> delete," \
+        "NFS=off, FILL_LIMIT=$FILL_LIMIT"
+fi
 
-# --- Stage 1: age-based move, SSD -> HDD -----------------------------------
+# --- Stage 1: what leaves the HDD, and where it goes ------------------------
+# Deliberately before the SSD -> HDD move: the HDD sheds whatever it is
+# going to shed before tonight's recordings land on it, so the space only
+# has to exist for the difference rather than for both at once. Nothing
+# here checks free space, and rsync failures are not inspected, so the
+# ordering is what keeps a nearly-full HDD working rather than a check.
+# Costs one cycle - a file crossing HDD_DAYS during this run is handled on
+# the next one, which at hourly ticks is not worth arithmetic to avoid.
+# With an archive this is a move; without one it is the delete stage. Same
+# threshold either way, which is the point of HDD_DAYS: it is how long
+# footage stays on the HDD, regardless of what happens next.
+if [ -n "$HDD_DAYS" ]; then
+    if [ -n "$NFS" ]; then
+        if mountpoint -q "$(dirname "$NFS")" || mountpoint -q "$NFS"; then
+            find "$DST" -type f -mtime +"$HDD_DAYS" -printf '%P\n' | while read -r f; do
+                log "archive: $f"
+                move_file "$f" "$DST" "$NFS/recordings"
+            done
+            find "$DST" -mindepth 1 -type d -empty -delete
+        else
+            # Not an error: the archive may be briefly unreachable. Files
+            # stay on the HDD and go next run. Nothing is deleted here,
+            # because with an archive configured the HDD never deletes.
+            log "WARNING: NFS archive not mounted, skipping archive stage"
+        fi
+    else
+        find "$DST" -type f -mtime +"$HDD_DAYS" -print -delete | while read -r f; do
+            log "purge: $f"
+        done
+        find "$DST" -mindepth 1 -type d -empty -delete
+    fi
+fi
+
+# The destination for everything that follows. If it is nearly full after
+# the purge above, say so while there is still time to act: rsync only
+# unlinks a source file after a successful transfer, so a full HDD strands
+# recordings on the SSD rather than losing them, but it does so quietly.
+hp=$(fs_pcent "$HDD")
+if [ -n "$hp" ] && [ "$hp" -ge 95 ]; then
+    log "WARNING: $HDD is ${hp}% full." \
+        "$([ -n "$HDD_DAYS" ] && echo "Lower HDD_DAYS" || echo "Set HDD_DAYS") to free space;" \
+        "moves off the SSD will start failing when it fills."
+fi
+
+# --- Stage 2: age-based move, SSD -> HDD -----------------------------------
 # Never touch files modified in the last 10 minutes; nginx-rtmp may still
 # be writing them.
-find "$SRC" -type f -mmin +$((KEEP_HOURS * 60)) -printf '%P\n' | while read -r f; do
+find "$SRC" -type f -mmin +$((SSD_HOURS * 60)) -printf '%P\n' | while read -r f; do
     log "age-move: $f"
     move_file "$f" "$SRC" "$DST"
 done
 
-# --- Stage 2: pressure eviction, oldest first ------------------------------
+# --- Stage 3: pressure eviction, oldest first ------------------------------
 while p=$(ssd_pcent); [ -n "$p" ] && [ "$p" -gt "$FILL_LIMIT" ]; do
     f=$(find "$SRC" -type f -mmin +10 -printf '%T@ %P\n' | sort -n | head -1 | cut -d' ' -f2-)
     [ -z "$f" ] && break
@@ -150,30 +263,15 @@ while p=$(ssd_pcent); [ -n "$p" ] && [ "$p" -gt "$FILL_LIMIT" ]; do
     move_file "$f" "$SRC" "$DST"
 done
 
-# --- Stage 3 (optional): archive, HDD -> NFS -------------------------------
-if [ -n "$NFS" ]; then
+# --- Stage 4 (optional): delete from the NFS archive -----------------------
+if [ -n "$NFS" ] && [ -n "$NFS_DAYS" ]; then
     if mountpoint -q "$(dirname "$NFS")" || mountpoint -q "$NFS"; then
-        find "$DST" -type f -mtime +"$ARCHIVE_DAYS" -printf '%P\n' | while read -r f; do
-            log "archive: $f"
-            move_file "$f" "$DST" "$NFS/recordings"
-        done
-        find "$DST" -mindepth 1 -type d -empty -delete
+        find "$NFS/recordings" -type f -mtime +"$NFS_DAYS" -print -delete \
+            | while read -r f; do log "purge: $f"; done
+        find "$NFS/recordings" -mindepth 1 -type d -empty -delete
     else
-        log "WARNING: NFS archive not mounted, skipping archive stage"
+        log "WARNING: NFS archive not mounted, skipping purge stage"
     fi
-fi
-
-# --- Stage 4 (optional): retention purge on the final tier -----------------
-if [ -n "$RETENTION_DAYS" ]; then
-    if [ -n "$NFS" ]; then
-        FINAL="$NFS/recordings"
-    else
-        FINAL="$DST"
-    fi
-    find "$FINAL" -type f -mtime +"$RETENTION_DAYS" -print -delete | while read -r f; do
-        log "purge: $f"
-    done
-    find "$FINAL" -mindepth 1 -type d -empty -delete
 fi
 
 # --- Cleanup: remove empty dirs left behind on the SSD tier ----------------

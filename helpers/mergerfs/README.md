@@ -116,21 +116,64 @@ one in git - safe to overwrite on upgrade, and easy to diff across a fleet.
 | Variable         | Default | Meaning                                                        |
 | ---------------- | ------- | -------------------------------------------------------------- |
 | `SSD` / `HDD`    |         | branch paths, must match your fstab                            |
-| `KEEP_HOURS`     | `48`    | hours of footage kept hot on the SSD                           |
+| `SSD_HOURS`      | `48`    | age at which footage moves off the SSD to the HDD              |
 | `FILL_LIMIT`     | `75`    | SSD usage % that triggers extra oldest-first eviction          |
-| `NFS`            | empty   | optional archive branch path, empty disables stage 3           |
-| `ARCHIVE_DAYS`   | `30`    | days on the HDD before footage moves to the NFS archive        |
-| `RETENTION_DAYS` | empty   | days on the final tier before deletion, empty disables purging |
+| `NFS`            | empty   | optional archive branch path, empty disables the archive tier  |
+| `HDD_DAYS`       | empty   | age at which footage leaves the HDD - moved to NFS when `NFS` is set, **deleted** when it is not |
+| `NFS_DAYS`       | empty   | age at which footage is **deleted** from the NFS archive       |
 | `LOCKFILE`       | `/run/videos-mover.lock` | single-instance lock, empty disables locking |
 
+**One setting per tier, each meaning the same thing: how old footage may
+get on that tier before the next stage takes it.** The last tier in your
+chain is the one that deletes - `HDD_DAYS` without an archive, `NFS_DAYS`
+with one. Leave the deleting one empty and nothing is ever purged; the
+mover says so once per run rather than letting the disk fill quietly.
+
+**All three are ages since the recording was made**, not time spent on
+that tier. Moves use `rsync -a`, which preserves mtime, so a file carries
+its original timestamp across every tier. `HDD_DAYS=30` means "30 days
+old" - the hours it spent on the SSD are part of that 30 days, not extra,
+so the setting is also your total days of footage when there is no
+archive.
+
+With an archive, `NFS_DAYS` must be **greater** than `HDD_DAYS`: the first
+is when a file leaves the HDD, the second is when it is deleted, and both
+are measured from the same origin. Set them equal and a file would be
+copied to the archive and deleted on the same run. The mover refuses to
+start rather than do that.
+
+A worked example - 36 hours hot, a month on the HDD, a year archived:
+
+```
+SSD_HOURS=36     # recordings move to the HDD after 36 hours
+HDD_DAYS=30      # and on to the NFS archive at 30 days old
+NFS_DAYS=365     # and are deleted at a year old
+```
+
+Without the archive, drop `NFS`/`NFS_DAYS` and `HDD_DAYS=30` is simply
+"keep 30 days of footage".
+
 The numeric settings are validated before anything moves or deletes. A
-non-numeric value, a `FILL_LIMIT` outside 1-99, or `RETENTION_DAYS=0`
-aborts the run with an error in the log instead of acting on it - worth
-having now that the values live in a file cron parses rather than in the
-script itself. Each run also logs a `config:` line with the values it used,
+non-numeric value, a `FILL_LIMIT` outside 1-99, a tier set to `0`, or an
+`NFS_DAYS` that is not greater than `HDD_DAYS` aborts the run with an
+error in the log instead of acting on it - worth having now that the
+values live in a file cron parses rather than in the script itself. Each
+run also logs a `config:` line with the values it used,
 so the log shows what was in effect at the time.
 
-How the stages interact: in normal operation `KEEP_HOURS` governs and
+Stage order: the HDD is emptied before it is filled. Whatever `HDD_DAYS`
+sends away - deleted, or moved to the archive - goes first, and only then
+does footage move down from the SSD. Nothing checks free space before a
+move and `rsync` failures are not inspected, so this ordering is what
+keeps a nearly-full HDD working: the space only has to exist for the
+difference between what arrives and what left, rather than for both at
+once. The cost is one cycle of latency, since a file crossing `HDD_DAYS`
+mid-run is handled on the next one. If the HDD is still 95% or more full
+after the purge, the mover logs a warning - `rsync --remove-source-files`
+only unlinks a source after a successful transfer, so a full HDD strands
+recordings on the SSD rather than losing them, but it does so quietly.
+
+How the stages interact: in normal operation `SSD_HOURS` governs and
 footage moves down after 48 hours. If the cameras outpace the SSD,
 `FILL_LIMIT` evicts oldest-first until usage is back under the limit. If
 both of those somehow fall behind, mergerfs's own `minfreespace` overflows
@@ -185,16 +228,19 @@ edited. Create `/etc/cron.d/rtmp-nginx-viewer`:
 
 #SSD=/mnt/cache/videos
 #HDD=/mnt/hdd/videos
-KEEP_HOURS=48
+SSD_HOURS=48
 FILL_LIMIT=75
 
-# Uncomment to enable the NFS archive tier (section 6)
-#NFS=/mnt/nfs/videos
-#ARCHIVE_DAYS=30
+# How many days of footage to keep. Without the NFS tier below this is
+# the delete threshold, so leaving it commented out means nothing is ever
+# purged and the HDD fills. Do not set it to 0.
+#HDD_DAYS=30
 
-# Uncomment to enable retention purging (section 7). Leave commented out
-# to disable; do not set it to 0.
-#RETENTION_DAYS=30
+# Uncomment to enable the NFS archive tier (section 6). HDD_DAYS then
+# becomes when footage MOVES to the archive, and NFS_DAYS is when it is
+# deleted - NFS_DAYS must be the larger of the two.
+#NFS=/mnt/nfs/videos
+#NFS_DAYS=365
 
 # run every hour for hot cache on ssd for history
 0 * * * * root /opt/videos-mover >> /var/log/videos-mover.log 2>&1
@@ -208,9 +254,9 @@ Environment lines in cron.d have their own rules:
 
 * Assignments apply to **every** job in that same file, so if you add other
   entries later, keep in mind they inherit these too.
-* No shell expansion. `KEEP_HOURS=$FOO` is the literal string `$FOO`, not a
+* No shell expansion. `SSD_HOURS=$FOO` is the literal string `$FOO`, not a
   variable reference, and the mover will reject it as non-numeric.
-* Write values bare - `KEEP_HOURS=48`, not `KEEP_HOURS="48"`. Debian's cron
+* Write values bare - `SSD_HOURS=48`, not `SSD_HOURS="48"`. Debian's cron
   does strip matching quotes, but bare values avoid the question entirely.
 * An assignment must come **before** the job line to apply to it.
 * A commented-out assignment simply falls back to the script default, which
@@ -234,7 +280,7 @@ grep videos-mover /var/log/syslog | tail
 
 You should see a `CRON` line with `(root) CMD (/opt/videos-mover ...)`.
 
-After the first `KEEP_HOURS` have elapsed, check
+After the first `SSD_HOURS` have elapsed, check
 `/var/log/videos-mover.log` and confirm files are appearing under
 `/mnt/hdd/videos/recordings` while `/videos/recordings` looks unchanged
 from the browser.
@@ -270,12 +316,18 @@ Then uncomment the archive settings in `/etc/cron.d/rtmp-nginx-viewer`:
 
 ```
 NFS=/mnt/nfs/videos
-ARCHIVE_DAYS=30
+NFS_DAYS=365
 ```
 
 The mover then adds a stage that migrates recordings older than
-`ARCHIVE_DAYS` from the HDD to the NAS, and skips the stage cleanly (with a
+`HDD_DAYS` from the HDD to the NAS, and skips the stage cleanly (with a
 log warning) whenever the share is not mounted.
+
+Note what enabling this does to `HDD_DAYS`: without an archive it is a
+delete threshold, with one it becomes a move threshold, and deletion
+passes to `NFS_DAYS`. So turning on the archive tier on a node that was
+keeping 30 days gives you 30 days on the HDD plus however long `NFS_DAYS`
+allows - and if you leave `NFS_DAYS` unset, the archive grows forever.
 
 Ownership note: `rsync -a` preserves www-data, which only maps correctly if
 the NAS export either uses the same UID for www-data or squashes ownership.
@@ -284,11 +336,21 @@ the simple fix if archived listings show the wrong owner.
 
 ## 7. Retention
 
-The final tier fills eventually. Set `RETENTION_DAYS` in
-`/etc/cron.d/rtmp-nginx-viewer` to delete footage older than N days from
-the last tier in the chain (the NFS archive when configured, otherwise the
-HDD). Leave it commented out to disable purging entirely - do not set it to
-`0`, which the mover rejects because it would purge almost everything.
+The last tier fills eventually. Whichever it is - the HDD on a two-tier
+node, the archive when one is configured - set that tier's variable in
+`/etc/cron.d/rtmp-nginx-viewer` and the mover deletes footage older than
+that many days:
+
+```
+HDD_DAYS=30      # two tiers: keep 30 days, then delete
+NFS_DAYS=365     # three tiers: HDD_DAYS moves, this deletes
+```
+
+Leave it unset to disable purging entirely - the mover logs a `NOTE:`
+line each run saying nothing is being deleted, so an unbounded disk is
+visible in the log before it is visible as a failure. Do not set it to
+`0`, which the mover rejects because it would sweep out almost
+everything.
 Size it from your real numbers: total daily footage is roughly
 
 ```
@@ -298,6 +360,25 @@ cameras x bitrate(Mbps) / 8 x 86400 / 1000  GB per day
 e.g. ten cameras at 4 Mbps produce about 430 GB/day - roughly six weeks on
 a 20TB drive.
 
+### Migrating from the old variable names
+
+`KEEP_HOURS`, `ARCHIVE_DAYS` and `RETENTION_DAYS` still work and are
+mapped automatically, with a warning in the log naming what each became.
+The rename happened because `RETENTION_DAYS` meant a different tier
+depending on whether `NFS` was set - "delete from whichever tier happens
+to be last" - so the same line in the same file meant the HDD on one node
+and the archive on another.
+
+| old | new, no archive | new, with archive |
+| --- | --- | --- |
+| `KEEP_HOURS` | `SSD_HOURS` | `SSD_HOURS` |
+| `ARCHIVE_DAYS` | (was ignored) | `HDD_DAYS` |
+| `RETENTION_DAYS` | `HDD_DAYS` | `NFS_DAYS` |
+
+Note `ARCHIVE_DAYS` used to default to `30` even on nodes with no archive,
+where it did nothing. `HDD_DAYS` has no default, so a two-tier node must
+now set it deliberately to have anything deleted - which is the point.
+
 **Avoid a retention collision:** the stock project crontab ships its own
 nightly purge along the lines of
 
@@ -306,7 +387,7 @@ nightly purge along the lines of
 ```
 
 Use one retention mechanism, not both. Note both now live in the same
-file, so the conflict is easy to spot: when you uncomment `RETENTION_DAYS`,
+file, so the conflict is easy to spot: when you uncomment `HDD_DAYS`,
 comment out that `find` line - if both are active, the shorter
 value silently wins and footage disappears earlier than either setting
 suggests. (Consolidating into the mover is recommended: one script, one
@@ -330,9 +411,9 @@ is used as the artifact showing when a camera went down.
 * **A setting in cron.d seems to be ignored** - check the `config:` line the
   mover logs on each run; it shows the values actually in effect. Common
   causes: the assignment sits below the job line, it is in a different
-  cron.d file, or the value has a stray space (`KEEP_HOURS = 48` is not a
+  cron.d file, or the value has a stray space (`SSD_HOURS = 48` is not a
   valid cron assignment). To test a value without waiting for cron:
-  `KEEP_HOURS=1 /opt/videos-mover`.
+  `SSD_HOURS=1 /opt/videos-mover`.
 * **Log shows "another videos-mover is still running"** - a previous run
   overran the cron interval. Occasional lines are normal after enabling
   tiering or during a big archive pass. Continuous lines mean the mover
