@@ -659,6 +659,16 @@ prune:
 	  THUMB_DAYS=$(THUMB_DAYS) MANIFEST_DAYS=$(MANIFEST_DAYS) \
 	  $(PREFIX)/prune_detections.sh
 
+# CRON_WAIT is how long a tick waits for the previous run before giving up.
+# `flock -n` would skip the tick instead, and a run that overruns by one
+# minute then costs a whole ten: a 72-camera node measured 11-minute runs
+# starting 20 minutes apart - idle 45% of the time while falling behind.
+# Waiting starts the next run the moment the last one ends, so a node at
+# capacity runs back to back. Just under the tick so at most one waiter
+# ever exists: if a second tick arrives, the older waiter times out and
+# the newer one takes its place.
+CRON_WAIT   ?= 590
+
 ## install-cron: every 10 min under flock, nightly prune, plus log rotation
 ##               (SINCE=6h limits each tick to a rolling window)
 install-cron: install-logrotate
@@ -666,7 +676,7 @@ install-cron: install-logrotate
 	@printf '%s\n' \
 	  'SHELL=/bin/bash' \
 	  'PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin' \
-	  '*/10 * * * * $(shell whoami) flock -n /tmp/detect.lock env $(RUNENV) $(NICE) $(RUNNER) $(CRON_SINCE_ARG)--limit $(CRON_LIMIT) >> $(LOGFILE) 2>&1 && $(PY) $(PREFIX)/build_index.py --detections $(DETECTIONS) >> $(LOGFILE) 2>&1' \
+	  '*/10 * * * * $(shell whoami) flock -w $(CRON_WAIT) /tmp/detect.lock env $(RUNENV) $(NICE) $(RUNNER) $(CRON_SINCE_ARG)--limit $(CRON_LIMIT) >> $(LOGFILE) 2>&1 && $(PY) $(PREFIX)/build_index.py --detections $(DETECTIONS) >> $(LOGFILE) 2>&1' \
 	  '$(PRUNE_AT) * * * $(shell whoami) DETECTIONS=$(DETECTIONS) RECORDINGS=$(RECORDINGS) THUMB_DAYS=$(THUMB_DAYS) MANIFEST_DAYS=$(MANIFEST_DAYS) $(PREFIX)/prune_detections.sh >> $(LOGFILE) 2>&1' \
 	  | sudo tee /etc/cron.d/detection >/dev/null
 	sudo chmod 644 /etc/cron.d/detection

@@ -382,10 +382,19 @@ camera**, or 100 files for a 50-camera site. Since each camera produces one
 second of video per second, the requirement in `bench`'s units is simply
 **one times realtime per camera** — 50 cameras need 50x aggregate.
 
-The failure is silent. `flock -n` skips a tick that is still running, the
-sweep takes newest first, and the log shows successful runs throughout —
-while the oldest recordings are never reached and quietly age out under the
-retention policy. Nothing errors.
+The failure is silent. The sweep takes newest first and the log shows
+successful runs throughout — while the oldest recordings are never reached
+and quietly age out under the retention policy. Nothing errors.
+
+It is also easy to make worse. A tick that finds the previous run still
+going must either skip or wait. Skipping (`flock -n`) turns a one-minute
+overrun into a ten-minute hole: a 72-camera node measured 11-minute runs
+starting 20 minutes apart, idle 45% of the time while processing barely
+half of what arrived. `make install-cron` therefore writes `flock -w 590`:
+the tick waits, and starts the instant the previous run finishes, so a node
+at capacity runs back to back. The wait is just under the tick, so at most
+one tick is ever queued. Look for runs that start seconds after the last
+one finished in the log — that is the node telling you it has no headroom.
 
 `make doctor` reports it, or run it alone:
 
@@ -711,10 +720,12 @@ the shared read-only mount.
 Resumability: files already having a manifest are skipped; files newer than
 ~2 minutes are excluded (the recorder may still hold them); GNU Parallel's
 `--joblog --resume-failed` re-runs only failures after an interruption.
-Schedule it from cron under `flock` so runs never overlap:
+Schedule it from cron under `flock` so runs never overlap. Wait for the
+lock rather than skipping (`-n`), or an overrun costs a whole tick — see
+"Will this node keep up?" above:
 
 ```
-*/10 * * * *  detector  flock -n /run/lock/detect.lock \
+*/10 * * * *  detector  flock -w 590 /run/lock/detect.lock \
     /opt/detection/run_detection.sh >> /var/log/detection.log 2>&1
 ```
 

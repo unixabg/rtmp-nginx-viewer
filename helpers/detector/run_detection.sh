@@ -36,7 +36,7 @@
 #   * a killed run is simply re-run; done files are skipped by the worker
 #
 # Run from cron on the detection box, e.g. every 10 minutes:
-#   */10 * * * *  detector  flock -n /run/lock/detect.lock \
+#   */10 * * * *  detector  flock -w 590 /run/lock/detect.lock \
 #       /opt/detection/run_detection.sh >> /var/log/detection/run.log 2>&1
 set -euo pipefail
 
