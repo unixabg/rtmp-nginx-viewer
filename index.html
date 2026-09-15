@@ -121,27 +121,73 @@
          * the link is shown and the user can authenticate by following it.
          */
         (async () => {
-            const show = id => document.getElementById(id).hidden = false;
+            const IDS = { history: 'navHistory', status: 'navStatus', detections: 'navDetections' };
+            const apply = f => { for (const k in IDS) document.getElementById(IDS[k]).hidden = !f[k]; };
 
-            // An nginx autoindex listing that mentions the extension.
+            /* The /recordings autoindex can run to tens of thousands of
+             * rows (cameras x segments x retention), so the listing is
+             * streamed and dropped the moment the extension turns up -
+             * nginx sorts by name, so that is the first kilobyte, not the
+             * last megabyte. Only a directory with no such file at all is
+             * read to the end, and that is the answer. */
             const hasFiles = async (path, ext) => {
+                const ctl = new AbortController();
                 try {
-                    const r = await fetch(path, { cache: 'no-store' });
+                    const r = await fetch(path, { cache: 'no-store', signal: ctl.signal });
                     if (r.status === 401 || r.status === 403) return true;
                     if (!r.ok) return false;
-                    return (await r.text()).includes(ext);
+                    const reader = r.body.getReader();
+                    const dec = new TextDecoder();
+                    let tail = '';
+                    for (;;) {
+                        const { value, done } = await reader.read();
+                        if (done) return false;
+                        const text = tail + dec.decode(value, { stream: true });
+                        if (text.includes(ext)) { ctl.abort(); return true; }
+                        tail = text.slice(-ext.length);   // a match split across chunks
+                    }
                 } catch (e) { return false; }
             };
 
-            if (await hasFiles('/recordings/', '.mp4')) show('navHistory');
-            if (await hasFiles('/thumbnails/', '.jpg')) show('navStatus');
-
             // The detector writes one index shard per day with detections.
-            try {
-                const r = await fetch('/detections/index/days.json', { cache: 'no-store' });
-                if (r.status === 401 || r.status === 403) show('navDetections');
-                else if (r.ok && (await r.json()).length) show('navDetections');
-            } catch (e) { /* helper not installed */ }
+            const hasDetections = async () => {
+                try {
+                    const r = await fetch('/detections/index/days.json', { cache: 'no-store' });
+                    if (r.status === 401 || r.status === 403) return true;
+                    return r.ok && (await r.json()).length > 0;
+                } catch (e) { return false; }    // helper not installed
+            };
+
+            /* Probing /recordings costs the server a full readdir+stat of
+             * the tree - nginx builds the whole listing before it sends a
+             * byte, so on a large install that is seconds per visit no
+             * matter how little the client reads. So the last answer is
+             * drawn at once from localStorage and only re-checked when it
+             * is stale. A "present" answer is the expensive one and the
+             * stable one: kept for an hour. An "absent" answer means the
+             * directory is empty, so re-checking is free - and it is the
+             * case where a feature has just been switched on. */
+            const KEY = 'rnv-features', TTL = 60 * 60 * 1000;
+            let cached = {};
+            try { cached = JSON.parse(localStorage.getItem(KEY)) || {}; } catch (e) { /* none */ }
+            apply(cached);
+
+            const fresh = k => cached[k] && (Date.now() - (cached.t || 0)) < TTL;
+            const probes = {
+                history:    () => hasFiles('/recordings/', '.mp4'),
+                status:     () => hasFiles('/thumbnails/', '.jpg'),
+                detections: hasDetections,
+            };
+            // t is the age of the oldest answer: it only moves once every
+            // probe has actually run, so a cached "present" is re-verified
+            // after TTL rather than renewing itself on each visit.
+            const skipped = Object.keys(probes).filter(fresh);
+            const features = { t: skipped.length ? cached.t : Date.now() };
+            await Promise.all(Object.keys(probes).map(async k => {
+                features[k] = fresh(k) ? true : await probes[k]();
+            }));
+            apply(features);
+            try { localStorage.setItem(KEY, JSON.stringify(features)); } catch (e) { /* private mode */ }
         })();
 
         /* Site name. sitename.txt is created by `make install` only when
