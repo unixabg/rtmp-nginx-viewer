@@ -524,6 +524,20 @@ it (raising the interval to the GOP if needed); `0` disables it. It is a
 software path — decoding one frame per GOP is negligible anywhere, so
 NVDEC is never used for it.
 
+**Set every camera's GOP to no more than the shortest `interval` you
+configure for it.** The fallback is silent: `auto` decides per file, and a
+file whose GOP is longer than `interval / 0.9` gets a full decode at
+3–10× the cost with nothing in the log — only `timing.decoder` in its
+manifest says `ffmpeg` instead of `keyframes`. On the camera the setting
+is usually called *I-frame interval* or *key frame interval*, sometimes
+given in frames rather than seconds (2 s at 25 fps is 50). With the
+default `interval` of 2 s that means a 2 s GOP or shorter. A camera left
+on a vendor default of 4 s, or reset by a firmware update, will full-decode
+every file it produces: on one site six cameras at a 3.77 s GOP were taking
+25 s per file against 8 s for the rest and were only found by comparing
+`timing.decoder` across cameras. If you lower a camera's `interval` in
+`cameras.json`, shorten its GOP to match at the same time.
+
 Sampling *below* the GOP is the opposite trade: it buys time resolution
 (a car crossing the frame in under 2 s) for a full decode of the file,
 about 10× the cost. That is worth it on a GPU node — inference is ~10 ms,
@@ -908,7 +922,8 @@ The decode/inference split tells you what to fix. Inference-dominated means
 a faster model or a GPU will help. Decode-dominated means it won't — you're
 bound by pulling frames off disk. The lever on every node is keyframe-only
 decode (check `timing.decoder` says `keyframes`; if it says `ffmpeg` the
-camera's interval is below its GOP); after that, one job per physical core
+camera's interval is below its GOP, and the fix is on the camera — see
+"Sampling density and decode cost"); after that, one job per physical core
 with `DECODE_THREADS=1`. A longer `interval` does *not* reduce decode
 unless it crosses the GOP, since every H.264 frame must be decoded to
 reach the next one — and NVDEC measured no faster than the CPU (see 2).
