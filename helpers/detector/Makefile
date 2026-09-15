@@ -335,6 +335,32 @@ elif cron_limit < per_tick * 1.5:
 endef
 export CAPACITY_PY
 
+# The installed schedule is what actually runs, so `capacity` reads JOBS
+# and CRON_LIMIT back from it when it exists: the Makefile defaults (2 and
+# 40) describe a checkout, not a node, and a box installed with JOBS=6
+# CRON_LIMIT=160 would otherwise be reported as unable to keep up. A value
+# set on the command line or in the environment still wins, so
+# `make capacity JOBS=8` remains a what-if.
+CRON_FILE   ?= /etc/cron.d/detection
+CRON_JOBS   := $(shell sed -n 's/.*[[:space:]]JOBS=\([0-9-]*\).*/\1/p' $(CRON_FILE) 2>/dev/null | head -1)
+CRON_LIMIT_INSTALLED := $(shell sed -n 's/.*--limit \([0-9]*\).*/\1/p' $(CRON_FILE) 2>/dev/null | head -1)
+ifeq ($(origin JOBS),file)
+ifneq ($(CRON_JOBS),)
+CAP_JOBS    := $(CRON_JOBS)
+CAP_JOBS_SRC := cron
+endif
+endif
+ifeq ($(origin CRON_LIMIT),file)
+ifneq ($(CRON_LIMIT_INSTALLED),)
+CAP_LIMIT   := $(CRON_LIMIT_INSTALLED)
+CAP_LIMIT_SRC := cron
+endif
+endif
+CAP_JOBS    ?= $(JOBS)
+CAP_LIMIT   ?= $(CRON_LIMIT)
+CAP_JOBS_SRC  ?= $(if $(filter file,$(origin JOBS)),default,$(origin JOBS))
+CAP_LIMIT_SRC ?= $(if $(filter file,$(origin CRON_LIMIT)),default,$(origin CRON_LIMIT))
+
 ## capacity: can this node keep up with its camera count?
 capacity:
 	@printf "%-22s" "capacity:"; \
@@ -342,7 +368,10 @@ capacity:
 	  if [ -z "$$p" ]; then echo "n/a (no python)"; \
 	  elif [ ! -d $(RECORDINGS) ]; then echo "n/a ($(RECORDINGS) not present)"; \
 	  else printf '%s\n' "$$CAPACITY_PY" | \
-	       $$p - $(RECORDINGS) $(DETECTIONS) $(JOBS) $(CRON_LIMIT) 600; fi
+	       $$p - $(RECORDINGS) $(DETECTIONS) $(CAP_JOBS) $(CAP_LIMIT) 600; \
+	       printf "%-22sJOBS=%s (%s) CRON_LIMIT=%s (%s)%s\n" "" $(CAP_JOBS) "$(CAP_JOBS_SRC)" \
+	         $(CAP_LIMIT) "$(CAP_LIMIT_SRC)" \
+	         "$(if $(CRON_JOBS),; cron = $(CRON_FILE),; $(CRON_FILE) not installed)"; fi
 
 ## doctor: check install, mounts, model, and permissions
 doctor:

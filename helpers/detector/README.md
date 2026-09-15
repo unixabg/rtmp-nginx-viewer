@@ -411,6 +411,12 @@ below the arrival rate the node cannot keep up no matter how fast it is.
 The check flags both "below" and "little margin", since a limit that only
 just covers arrivals leaves nothing for working through a backlog.
 
+`JOBS` and `CRON_LIMIT` are read back from `/etc/cron.d/detection` when it
+exists, since that is what actually runs; the Makefile defaults only
+describe a checkout. The last line says where the numbers came from. A
+value on the command line still wins, so `make capacity JOBS=8` answers
+"what if" without touching the schedule.
+
 ## 2b. Per-camera detection rules (cameras.json)
 
 Different cameras want different objects: an indoor camera only cares about
