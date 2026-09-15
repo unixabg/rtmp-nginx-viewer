@@ -538,6 +538,21 @@ every file it produces: on one site six cameras at a 3.77 s GOP were taking
 `timing.decoder` across cameras. If you lower a camera's `interval` in
 `cameras.json`, shorten its GOP to match at the same time.
 
+`make gop` checks every camera at once — one recent file each, its
+keyframe spacing against the `interval` its rule gives it:
+
+```
+camera                     GOP s  interval  decode
+Camera1                     1.00        1s  keyframes on CPU; full decode on CUDA (gpu_interval=0.25)
+Camera32                    2.00        2s  keyframes
+HS_ALC_3                    3.77        2s  FULL DECODE - set camera GOP <= 2.0s
+
+1 camera(s) cannot use keyframe-only decode; fix the GOP on the camera
+```
+
+Run it after changing a camera's I-frame setting to confirm the change
+took, and after lowering an `interval` in `cameras.json`.
+
 Sampling *below* the GOP is the opposite trade: it buys time resolution
 (a car crossing the frame in under 2 s) for a full decode of the file,
 about 10× the cost. That is worth it on a GPU node — inference is ~10 ms,

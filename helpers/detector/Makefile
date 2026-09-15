@@ -94,7 +94,7 @@ CONFIG      := cameras.json
 
 .PHONY: help install install-deps install-scripts install-config model \
         upgrade upgrade-scripts upgrade-deps upgrade-web uninstall purge \
-        doctor status run dry-run prune index web classes bench \
+        doctor status run dry-run prune index web classes bench gop \
         install-cron install-logrotate uninstall-cron test clean
 
 ## help: show this list
@@ -372,6 +372,105 @@ capacity:
 	       printf "%-22sJOBS=%s (%s) CRON_LIMIT=%s (%s)%s\n" "" $(CAP_JOBS) "$(CAP_JOBS_SRC)" \
 	         $(CAP_LIMIT) "$(CAP_LIMIT_SRC)" \
 	         "$(if $(CRON_JOBS),; cron = $(CRON_FILE),; $(CRON_FILE) not installed)"; fi
+
+# One recent file per camera, its keyframe spacing, and whether the interval
+# that cameras.json gives that camera allows keyframe-only decode. `doctor`
+# probes a single file, which cannot show that six of 72 cameras are on a
+# different GOP; this walks all of them. The probe reads the first 20 s of
+# each file, so it is cheap even over NFS.
+define GOP_PY
+import fnmatch, json, os, subprocess, sys, time
+from concurrent.futures import ThreadPoolExecutor
+
+rec, cfg_path, jobs = sys.argv[1], sys.argv[2], int(sys.argv[3])
+RATIO = 0.9   # keyframe mode needs interval >= RATIO * GOP (worker's KEYFRAME_MIN_RATIO)
+
+try:
+    cfg = json.load(open(cfg_path))
+except (OSError, ValueError):
+    cfg = {}
+rules = cfg.get("rules", [])
+default_iv = float(cfg.get("default", {}).get("interval", 2.0))
+
+def rule_for(name):
+    for r in rules:
+        if r.get("pattern") and fnmatch.fnmatch(name, r["pattern"]):
+            return r
+    return {}
+
+# Newest closed file per camera from the last 24h; a camera that stopped
+# recording last month is not worth a probe.
+now = time.time()
+newest = {}
+with os.scandir(rec) as it:
+    for e in it:
+        if not e.name.endswith(".mp4"):
+            continue
+        try:
+            m = e.stat().st_mtime
+        except OSError:
+            continue
+        if m < now - 86400 or m > now - 120:
+            continue
+        cam = e.name.split("-", 1)[0]
+        if cam not in newest or m > newest[cam][0]:
+            newest[cam] = (m, e.path)
+if not newest:
+    print("no recordings from the last 24h under %s" % rec); raise SystemExit
+
+def probe(item):
+    cam, (_, path) = item
+    cmd = ["ffprobe", "-v", "error", "-skip_frame", "nokey", "-select_streams", "v:0",
+           "-show_entries", "frame=pts_time", "-of", "csv=p=0",
+           "-read_intervals", "%+20", path]
+    try:
+        out = subprocess.run(cmd, capture_output=True, text=True, timeout=60).stdout
+    except (OSError, subprocess.SubprocessError):
+        return cam, path, None
+    ts = []
+    for line in out.splitlines():
+        try:
+            ts.append(float(line.strip().rstrip(",")))
+        except ValueError:
+            pass
+    gaps = sorted(b - a for a, b in zip(ts, ts[1:]) if b > a)
+    return cam, path, (gaps[len(gaps) // 2] if gaps else None)
+
+with ThreadPoolExecutor(max_workers=jobs) as ex:
+    rows = list(ex.map(probe, sorted(newest.items())))
+
+print("%-24s %7s %9s  %s" % ("camera", "GOP s", "interval", "decode"))
+bad = 0
+for cam, path, gop in rows:
+    r = rule_for(os.path.basename(path))
+    iv = float(r.get("interval", default_iv))
+    if r.get("classes") == []:
+        verdict = "skipped by rule"
+    elif gop is None:
+        verdict = "GOP unknown - full decode"; bad += 1
+    elif "gpu_interval" in r:
+        verdict = "keyframes on CPU; full decode on CUDA (gpu_interval=%g)" % float(r["gpu_interval"]) \
+                  if iv >= RATIO * gop else "FULL DECODE - GOP > interval"
+        bad += verdict.startswith("FULL")
+    elif iv >= RATIO * gop:
+        verdict = "keyframes"
+    else:
+        verdict = "FULL DECODE - set camera GOP <= %.1fs" % iv; bad += 1
+    print("%-24s %7s %8gs  %s" % (cam[:24], "?" if gop is None else "%.2f" % gop, iv, verdict))
+print()
+if bad:
+    print("%d camera(s) cannot use keyframe-only decode; fix the GOP on the camera "
+          "(see README, 'Sampling density and decode cost')" % bad)
+else:
+    print("every camera can use keyframe-only decode")
+endef
+export GOP_PY
+
+## gop: keyframe spacing per camera vs its interval - who is full-decoding?
+gop:
+	@command -v ffprobe >/dev/null || { echo "ffprobe not found - apt install ffmpeg"; exit 1; }
+	@p=$$([ -x $(PY) ] && echo $(PY) || command -v python3); \
+	  printf '%s\n' "$$GOP_PY" | $$p - $(RECORDINGS) $(PREFIX)/$(CONFIG) $(CAP_JOBS)
 
 ## doctor: check install, mounts, model, and permissions
 doctor:
