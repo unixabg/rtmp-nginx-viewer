@@ -51,8 +51,11 @@
     const CAMERAS_PER_PAGE = 15; // Number of cameras to display per page
 
     // Label suffix for sub-stream cameras, so a search for "FrontDoor" shows
-    // both FrontDoor (main) and FrontDoor-sub (sub-stream).
+    // both FrontDoor (main) and FrontDoor-sub (sub-stream). Sub-streams already
+    // named with a sub prefix or suffix (subFrontDoor, FrontDoorsub) keep
+    // their name as-is.
     const SUB_LABEL_SUFFIX = '-sub';
+    const SUB_NAME_RE = /^sub[-_]?|[-_]?sub$/i;
 
     // Map an nginx-rtmp application name to the URL prefix that serves its
     // HLS playlists. Keep in step with appHlsBase() in kiosk.html and the
@@ -69,7 +72,14 @@
     }
 
     function cameraLabel(app, name) {
-        return app === 'cam-sub' ? name + SUB_LABEL_SUFFIX : name;
+        if (app !== 'cam-sub' || SUB_NAME_RE.test(name)) return name;
+        return name + SUB_LABEL_SUFFIX;
+    }
+
+    // Camera name without any sub prefix/suffix, used for sorting so a
+    // sub-stream sits next to its main camera (ES_Cam32, subES_Cam32).
+    function baseName(camera) {
+        return camera.app === 'cam-sub' ? camera.name.replace(SUB_NAME_RE, '') : camera.name;
     }
 
     // Function to display the cameras for the current page
@@ -184,10 +194,11 @@
         }
     }
 
-    // Sort by camera name, then main before sub, so FrontDoor sits next to
-    // FrontDoor-sub.
+    // Sort by base camera name, then main before sub, so FrontDoor sits next
+    // to its sub-stream (FrontDoor-sub or subFrontDoor).
     function compareCameras(a, b) {
-        if (a.name !== b.name) return a.name < b.name ? -1 : 1;
+        const an = baseName(a), bn = baseName(b);
+        if (an !== bn) return an < bn ? -1 : 1;
         if (a.app === b.app) return 0;
         return a.app === 'cam' ? -1 : 1;
     }
