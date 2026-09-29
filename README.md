@@ -210,6 +210,17 @@ You can confirm a sub-stream is reachable by loading its playlist directly in a 
 > [!NOTE]
 > The sub-stream HLS segments are written to /tmp/sub-hls. If you have any housekeeping that cleans /tmp, make sure it does not sweep the live segment directories out from under nginx.
 
+#### Sub-streams in Live View
+
+Sub-streams also appear in Live View (`live.html`) as their own cameras, next to their main camera, and play from `/sub-hls`. A search matches both, so searching `CamName` shows the main and sub tiles side by side. How a sub-stream is labelled depends on its `name=`:
+
+| `name=` in cameras-sub.conf | Live View label | Plays |
+| --- | --- | --- |
+| `CamName` (same as main) | `CamName-sub` | `sub-hls/CamName.m3u8` |
+| `subCamName` or `CamNamesub` | unchanged | `sub-hls/subCamName.m3u8` |
+
+Either naming style works. If you use a `sub` prefix, target it in kiosk grids by that name too, e.g. `kiosk.html?cams=cam-sub:subCamName`.
+
 ### Links
 https://jared.geek.nz/2023/11/streaming-rtmp-with-openwrt/
 
