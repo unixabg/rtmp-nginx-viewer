@@ -41,11 +41,36 @@
 <div class="player-wrapper" id="wrapper"></div>
 
 <script>
+    // Each camera is { app, name, label, id }. The same camera name can exist in
+    // both the main (cam) and sub-stream (cam-sub) applications, so the label
+    // and player id carry the application to keep the two apart.
     let allCameras = []; // Array to store the full list of cameras
     let cameras = [];
     let playerContainers = {}; // Tracks player instances by their container ID
     let currentPage = 1; // Variable to track the current page in pagination
     const CAMERAS_PER_PAGE = 15; // Number of cameras to display per page
+
+    // Label suffix for sub-stream cameras, so a search for "FrontDoor" shows
+    // both FrontDoor (main) and FrontDoor-sub (sub-stream).
+    const SUB_LABEL_SUFFIX = '-sub';
+
+    // Map an nginx-rtmp application name to the URL prefix that serves its
+    // HLS playlists. Keep in step with appHlsBase() in kiosk.html and the
+    // locations in the nginx "default" site.
+    function appHlsBase(app) {
+        switch (app) {
+            case 'cam':
+                return 'hls';        // hls_path /tmp/hls
+            case 'cam-sub':
+                return 'sub-hls';    // hls_path /tmp/sub-hls
+            default:
+                return `hls/${app}`;
+        }
+    }
+
+    function cameraLabel(app, name) {
+        return app === 'cam-sub' ? name + SUB_LABEL_SUFFIX : name;
+    }
 
     // Function to display the cameras for the current page
     function displayCameras() {
@@ -74,18 +99,18 @@
     }
 
 
-    function addCamera(name) {
+    function addCamera(camera) {
         let wrapper = document.getElementById('wrapper');
         let container = document.createElement('div');
         container.className = 'camera-container';
 
         let playerDiv = document.createElement('div');
         playerDiv.className = 'camera-preview';
-        playerDiv.id = 'player-' + name; // Unique ID for the player container
+        playerDiv.id = camera.id; // Unique per application + name
 
         let overlay = document.createElement('div');
         overlay.className = 'camera-overlay';
-        overlay.innerText = name; // Set the camera name as the text
+        overlay.innerText = camera.label; // Sub-streams carry the -sub suffix
 
         container.appendChild(playerDiv);
         container.appendChild(overlay);
@@ -94,8 +119,8 @@
         // No player initialization here. Just preparing the containers.
     }
 
-    function startPlayer(name) {
-        const playerDivId = 'player-' + name;
+    function startPlayer(camera) {
+        const playerDivId = camera.id;
         if (!playerContainers[playerDivId]) { // Check if player was already created
             const player = OvenPlayer.create(playerDivId, {
                 autoStart: true,
@@ -103,7 +128,7 @@
                 mute: true,
                 controls: true,
                 sources: [{
-                    "file": `hls/${name}.m3u8`,
+                    "file": `${appHlsBase(camera.app)}/${camera.name}.m3u8`,
                     "label": "hls",
                     "type": "hls"
                 }],
@@ -145,10 +170,10 @@
 
         let filteredCameras = allCameras; // Always start filtering from the full list
         searchTerms.forEach(term => {
-            filteredCameras = filteredCameras.filter(camera => camera.toLowerCase().includes(term));
+            filteredCameras = filteredCameras.filter(camera => camera.label.toLowerCase().includes(term));
         });
 
-        cameras = filteredCameras.sort(); // Update the cameras array with filtered results
+        cameras = filteredCameras.slice().sort(compareCameras); // Update the cameras array with filtered results
         currentPage = 1; // Reset to the first page
         displayCameras(); // Display the filtered cameras
     }
@@ -157,6 +182,14 @@
         if (event.keyCode === 13) {
             filterCameras();
         }
+    }
+
+    // Sort by camera name, then main before sub, so FrontDoor sits next to
+    // FrontDoor-sub.
+    function compareCameras(a, b) {
+        if (a.name !== b.name) return a.name < b.name ? -1 : 1;
+        if (a.app === b.app) return 0;
+        return a.app === 'cam' ? -1 : 1;
     }
 
     // Function to fetch and initialize cameras
@@ -168,17 +201,32 @@
         xhr.onload = function () {
             if (xhr.status === 200) {
                 const xml = xhr.responseXML;
-                let camIter = xml.evaluate(`/rtmp/server/application/name[contains(., "cam")]/../live/stream/name`,
-                    xml, null, XPathResult.ANY_TYPE, null);
+                // Walk each camera application separately so every stream
+                // keeps track of which application (main or sub) it came from.
+                const appIter = xml.evaluate(`/rtmp/server/application[contains(name, "cam")]`,
+                    xml, null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null);
+                const seen = new Set();
 
-                while (true) {
-                    const el = camIter.iterateNext();
-                    if (!el) break;
-                    const name = el.textContent;
-                    allCameras.push(name); // Store in the full list
+                for (let i = 0; i < appIter.snapshotLength; i++) {
+                    const appNode = appIter.snapshotItem(i);
+                    const app = xml.evaluate('string(name)', appNode, null, XPathResult.STRING_TYPE, null).stringValue.trim();
+                    const streamIter = xml.evaluate('live/stream/name', appNode, null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null);
+
+                    for (let j = 0; j < streamIter.snapshotLength; j++) {
+                        const name = streamIter.snapshotItem(j).textContent.trim();
+                        const key = app + '/' + name;
+                        if (!name || seen.has(key)) continue;
+                        seen.add(key);
+                        allCameras.push({
+                            app: app,
+                            name: name,
+                            label: cameraLabel(app, name),
+                            id: 'player-' + allCameras.length
+                        });
+                    }
                 }
 
-                allCameras.sort(); // Sort the full list alphabetically
+                allCameras.sort(compareCameras); // Sort the full list alphabetically
                 cameras = [...allCameras]; // Initialize the display list
                 // Cameras are now fetched and stored. Players are not created here.
             }
